@@ -1,7 +1,7 @@
 "use client"
-
+import type { FormEvent } from "react"
 import type React from "react"
-
+import axios from "axios"
 import { useState } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
@@ -15,9 +15,11 @@ import AuthLayout from "./auth-layout"
 import SocialLogin from "./social-login"
 import PasswordStrength from "./password-strength"
 import { validateEmail, validatePassword, validateName } from "@/lib/auth-validation"
+import { useRouter } from 'next/navigation'
+import { useSignUp } from "@clerk/nextjs";
 
 interface FormData {
-  fullName: string
+  username: string
   email: string
   password: string
   confirmPassword: string
@@ -25,7 +27,7 @@ interface FormData {
 }
 
 interface FormErrors {
-  fullName?: string
+  username?: string
   email?: string
   password?: string
   confirmPassword?: string
@@ -34,8 +36,10 @@ interface FormErrors {
 }
 
 export default function SignupForm() {
+  const router = useRouter()
+  const { isLoaded, signUp, setActive } = useSignUp()
   const [formData, setFormData] = useState<FormData>({
-    fullName: "",
+    username: "",
     email: "",
     password: "",
     confirmPassword: "",
@@ -52,7 +56,7 @@ export default function SignupForm() {
     let error = ""
 
     switch (field) {
-      case "fullName":
+      case "username":
         const nameValidation = validateName(value as string, "Full name")
         if (!nameValidation.isValid) error = nameValidation.errors[0]
         break
@@ -130,6 +134,57 @@ export default function SignupForm() {
     }
   }
 
+  const handleSignup = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    
+    if (!validateForm() || !isLoaded) return;
+
+    setIsLoading(true);
+
+    try {
+      const result = await signUp.create({
+        emailAddress: formData.email,
+        password: formData.password,
+        username: formData.username,
+      });
+
+      if (result.status === "needs_email_verification") {
+        sessionStorage.setItem('pendingSignUp', JSON.stringify({
+          email: formData.email,
+          username: formData.username
+        }));
+        router.push("/auth/email-not-verified");
+      } else if (result.status === "complete") {
+        await result.createdSessionId;
+        router.push("/dashboard");
+      } else {
+        console.log("Sign up not complete:", result);
+      }
+    } catch (error: any) {
+      console.error('Signup error:', error);
+      
+      if (error.errors) {
+        const newErrors: FormErrors = {};
+        
+        error.errors.forEach((err: any) => {
+          if (err.meta?.param_name === 'email_address') {
+            newErrors.email = err.message;
+          } else if (err.meta?.param_name === 'username') {
+            newErrors.username = err.message;
+          }
+        });
+        
+        setErrors(Object.keys(newErrors).length > 0 ? newErrors : { 
+          general: "Registration failed. Please try again." 
+        });
+      } else {
+        setErrors({ general: "Registration failed. Please try again." });
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <AuthLayout>
       <Card className="w-full max-w-md">
@@ -157,23 +212,23 @@ export default function SignupForm() {
             </div>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSignup} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="fullName">Full Name</Label>
+              <Label htmlFor="username">Username</Label>
               <div className="relative">
                 <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                 <Input
-                  id="fullName"
+                  id="username"
                   type="text"
-                  placeholder="John Doe"
-                  className={`pl-10 ${errors.fullName ? "border-red-500 focus:border-red-500 focus:ring-red-500" : ""}`}
-                  value={formData.fullName}
-                  onChange={(e) => handleInputChange("fullName", e.target.value)}
-                  onBlur={() => handleBlur("fullName")}
+                  placeholder="Di-Tech"
+                  className={`pl-10 ${errors.username ? "border-red-500 focus:border-red-500 focus:ring-red-500" : ""}`}
+                  value={formData.username}
+                  onChange={(e) => handleInputChange("username", e.target.value)}
+                  onBlur={() => handleBlur("username")}
                   disabled={isLoading}
                 />
               </div>
-              {errors.fullName && <p className="text-sm text-red-500">{errors.fullName}</p>}
+              {errors.username && <p className="text-sm text-red-500">{errors.username}</p>}
             </div>
 
             <div className="space-y-2">
@@ -183,7 +238,7 @@ export default function SignupForm() {
                 <Input
                   id="email"
                   type="email"
-                  placeholder="john@example.com"
+                  placeholder="di-tech@example.com"
                   className={`pl-10 ${errors.email ? "border-red-500 focus:border-red-500 focus:ring-red-500" : ""}`}
                   value={formData.email}
                   onChange={(e) => handleInputChange("email", e.target.value)}
@@ -248,6 +303,7 @@ export default function SignupForm() {
             <div className="flex items-center space-x-2">
               <Checkbox
                 id="terms"
+                name="acceptTerms"
                 checked={formData.acceptTerms}
                 onCheckedChange={(checked) => handleInputChange("acceptTerms", !!checked)}
               />

@@ -1,6 +1,7 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
+import { useAuth, useUser } from "@clerk/nextjs"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -61,6 +62,53 @@ import {
 export function UserDashboard() {
   const [activeTab, setActiveTab] = useState("overview")
   const [timeRange, setTimeRange] = useState("30d")
+  const { getToken, isLoaded, isSignedIn } = useAuth()
+  const { user } = useUser()
+  const [userStats, setUserStats] = useState({
+    totalCampaigns: 0,
+    activeCampaigns: 0,
+    completedCampaigns: 0,
+    totalRaised: 0,
+    totalGoal: 0,
+    totalDonations: 0,
+    totalDonors: 0,
+    avgDonation: 0,
+    conversionRate: 0,
+    monthlyGrowth: 0,
+    totalViews: 0,
+    socialShares: 0,
+  })
+
+  useEffect(() => {
+    const fetchUserData = async () => {
+      if (!isLoaded || !isSignedIn) return;
+
+      try {
+        const token = await getToken();
+        if (!token) return;
+
+        // Fetch user-specific data from your backend
+        const response = await fetch('http://localhost:8000/api/v1/user/stats', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setUserStats(data);
+        }
+      } catch (error) {
+        console.error('Error fetching user data:', error);
+      }
+    };
+
+    fetchUserData();
+  }, [getToken, isLoaded, isSignedIn]);
+
+  if (!isLoaded || !isSignedIn) {
+    return <div>Loading...</div>;
+  }
 
   // Enhanced mock data with more realistic metrics
   const stats = {
@@ -301,7 +349,9 @@ export function UserDashboard() {
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-              <p className="text-gray-600 mt-1">Welcome back! Here's what's happening with your campaigns.</p>
+              <p className="text-gray-600 mt-1">
+                Welcome back {user?.username || user?.firstName || 'User'}! Here's what's happening with your campaigns.
+              </p>
             </div>
             <div className="flex items-center gap-3">
               <Select value={timeRange} onValueChange={setTimeRange}>
@@ -342,14 +392,14 @@ export function UserDashboard() {
                   <DollarSign className="h-4 w-4 text-emerald-600" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{formatCurrency(stats.totalRaised)}</div>
+                  <div className="text-2xl font-bold">{formatCurrency(userStats.totalRaised)}</div>
                   <div className="flex items-center text-xs text-emerald-600 mt-1">
-                    <ArrowUpRight className="h-3 w-3 mr-1" />+{formatPercent(stats.monthlyGrowth)} from last month
+                    <ArrowUpRight className="h-3 w-3 mr-1" />+{formatPercent(userStats.monthlyGrowth)} from last month
                   </div>
                   <div className="mt-2">
-                    <Progress value={(stats.totalRaised / stats.totalGoal) * 100} className="h-1" />
+                    <Progress value={(userStats.totalRaised / userStats.totalGoal) * 100} className="h-1" />
                     <p className="text-xs text-gray-500 mt-1">
-                      {formatPercent((stats.totalRaised / stats.totalGoal) * 100)} of total goal
+                      {formatPercent((userStats.totalRaised / userStats.totalGoal) * 100 || 0)} of total goal
                     </p>
                   </div>
                 </CardContent>
@@ -361,11 +411,11 @@ export function UserDashboard() {
                   <TrendingUp className="h-4 w-4 text-blue-600" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{stats.activeCampaigns}</div>
-                  <p className="text-xs text-gray-600 mt-1">{stats.totalCampaigns} total campaigns</p>
+                  <div className="text-2xl font-bold">{userStats.activeCampaigns}</div>
+                  <p className="text-xs text-gray-600 mt-1">{userStats.totalCampaigns} total campaigns</p>
                   <div className="flex items-center gap-2 mt-2">
                     <Badge variant="secondary" className="text-xs">
-                      {stats.completedCampaigns} completed
+                      {userStats.completedCampaigns} completed
                     </Badge>
                   </div>
                 </CardContent>
@@ -377,11 +427,11 @@ export function UserDashboard() {
                   <Users className="h-4 w-4 text-purple-600" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{stats.totalDonors}</div>
-                  <p className="text-xs text-gray-600 mt-1">Avg. {formatCurrency(stats.avgDonation)} per donation</p>
+                  <div className="text-2xl font-bold">{userStats.totalDonors}</div>
+                  <p className="text-xs text-gray-600 mt-1">Avg. {formatCurrency(userStats.avgDonation)} per donation</p>
                   <div className="flex items-center text-xs text-purple-600 mt-1">
                     <Heart className="h-3 w-3 mr-1" />
-                    {formatPercent(stats.conversionRate)} conversion rate
+                    {formatPercent(userStats.conversionRate)} conversion rate
                   </div>
                 </CardContent>
               </Card>
@@ -392,11 +442,11 @@ export function UserDashboard() {
                   <Eye className="h-4 w-4 text-orange-600" />
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold">{stats.totalViews.toLocaleString()}</div>
-                  <p className="text-xs text-gray-600 mt-1">{stats.socialShares} social shares</p>
+                  <div className="text-2xl font-bold">{userStats.totalViews.toLocaleString()}</div>
+                  <p className="text-xs text-gray-600 mt-1">{userStats.socialShares} social shares</p>
                   <div className="flex items-center text-xs text-orange-600 mt-1">
                     <Share2 className="h-3 w-3 mr-1" />
-                    {((stats.socialShares / stats.totalViews) * 100).toFixed(1)}% share rate
+                    {((userStats.socialShares / userStats.totalViews) * 100).toFixed(1) || 0}% share rate
                   </div>
                 </CardContent>
               </Card>

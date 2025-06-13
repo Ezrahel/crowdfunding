@@ -21,7 +21,7 @@ interface SignupModalProps {
 
 const SignupModal = ({ isOpen, onClose, onSwitchToLogin }: SignupModalProps) => {
   const [formData, setFormData] = useState({
-    fullName: "",
+    username: "",
     email: "",
     password: "",
     confirmPassword: "",
@@ -37,7 +37,7 @@ const SignupModal = ({ isOpen, onClose, onSwitchToLogin }: SignupModalProps) => 
   useEffect(() => {
     if (!isOpen) {
       setFormData({
-        fullName: "",
+        username: "",
         email: "",
         password: "",
         confirmPassword: "",
@@ -69,7 +69,7 @@ const SignupModal = ({ isOpen, onClose, onSwitchToLogin }: SignupModalProps) => 
     let error = ""
 
     switch (name) {
-      case "fullName":
+      case "username":
         const nameValidation = validateName(value, "Full name")
         if (!nameValidation.isValid) error = nameValidation.errors[0]
         break
@@ -106,8 +106,8 @@ const SignupModal = ({ isOpen, onClose, onSwitchToLogin }: SignupModalProps) => 
     // Validate all fields
     const validationErrors: { [key: string]: string } = {}
 
-    const nameValidation = validateName(formData.fullName, "Full name")
-    if (!nameValidation.isValid) validationErrors.fullName = nameValidation.errors[0]
+    const nameValidation = validateName(formData.username, "Full name")
+    if (!nameValidation.isValid) validationErrors.username = nameValidation.errors[0]
 
     const emailValidation = validateEmail(formData.email)
     if (!emailValidation.isValid) validationErrors.email = emailValidation.errors[0]
@@ -173,7 +173,7 @@ const SignupModal = ({ isOpen, onClose, onSwitchToLogin }: SignupModalProps) => 
           <div className="px-6 py-6">
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="modal-fullName" className="text-sm font-medium">
+                <Label htmlFor="modal-username" className="text-sm font-medium">
                   Full Name
                 </Label>
                 <div className="relative">
@@ -181,32 +181,32 @@ const SignupModal = ({ isOpen, onClose, onSwitchToLogin }: SignupModalProps) => 
                     <User size={18} />
                   </div>
                   <Input
-                    id="modal-fullName"
-                    name="fullName"
+                    id="modal-username"
+                    name="username"
                     type="text"
                     autoComplete="name"
                     placeholder="John Doe"
                     className={cn(
                       "pl-10 transition-all",
-                      errors.fullName ? "border-red-500 focus-visible:ring-red-500" : "",
-                      getInputState("fullName") === "success" ? "border-green-500 focus-visible:ring-green-500" : "",
+                      errors.username ? "border-red-500 focus-visible:ring-red-500" : "",
+                      getInputState("username") === "success" ? "border-green-500 focus-visible:ring-green-500" : "",
                     )}
-                    value={formData.fullName}
-                    onChange={(e) => handleInputChange("fullName", e.target.value)}
-                    onBlur={() => handleBlur("fullName")}
+                    value={formData.username}
+                    onChange={(e) => handleInputChange("username", e.target.value)}
+                    onBlur={() => handleBlur("username")}
                     disabled={isSubmitting}
                   />
-                  {touchedFields.fullName && (
+                  {touchedFields.username && (
                     <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                      {errors.fullName ? (
+                      {errors.username ? (
                         <AlertCircle size={18} className="text-red-500" />
-                      ) : formData.fullName ? (
+                      ) : formData.username ? (
                         <CheckCircle2 size={18} className="text-green-500" />
                       ) : null}
                     </div>
                   )}
                 </div>
-                {errors.fullName && <p className="text-sm text-red-500 mt-1">{errors.fullName}</p>}
+                {errors.username && <p className="text-sm text-red-500 mt-1">{errors.username}</p>}
               </div>
 
               <div className="space-y-2">

@@ -3,8 +3,9 @@ import type { Metadata } from "next"
 import { Inter } from "next/font/google"
 import "./globals.css"
 import { Navigation } from "@/components/navigation"
-import { Footer } from "@/components/footer"
 import { AuthModalsProvider } from "@/components/auth/auth-modals"
+import { ConditionalFooter } from "@/components/conditionalFooter"
+import { ClerkProvider } from '@clerk/nextjs'
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -19,14 +20,16 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={inter.className}>
-        <AuthModalsProvider>
-          <Navigation />
-          <main className="min-h-screen">{children}</main>
-          <Footer />
-        </AuthModalsProvider>
-      </body>
-    </html>
+    <ClerkProvider>
+      <html lang="en" suppressHydrationWarning>
+        <body className={inter.className}>
+          <AuthModalsProvider>
+            <Navigation />
+            <main className="min-h-screen">{children}</main>
+            <ConditionalFooter />
+          </AuthModalsProvider>
+        </body>
+      </html>
+    </ClerkProvider>
   )
 }

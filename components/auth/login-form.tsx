@@ -1,9 +1,10 @@
 "use client"
 
 import type React from "react"
-
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import Link from "next/link"
+import { useSignIn, useAuth } from "@clerk/nextjs"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -27,6 +28,9 @@ interface FormErrors {
 }
 
 export default function LoginForm() {
+  const router = useRouter();
+  const { isLoaded, signIn } = useSignIn();
+  const { isSignedIn } = useAuth();
   const [formData, setFormData] = useState<FormData>({
     email: "",
     password: "",
@@ -36,6 +40,12 @@ export default function LoginForm() {
   const [errors, setErrors] = useState<FormErrors>({})
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+
+  useEffect(() => {
+    if (isSignedIn) {
+      router.push("/dashboard");
+    }
+  }, [isSignedIn, router]);
 
   const validateForm = () => {
     const newErrors: FormErrors = {}
@@ -64,24 +74,30 @@ export default function LoginForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    if (!validateForm()) return
+    if (!validateForm() || !isLoaded) return
 
     setIsLoading(true)
 
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1500))
+      const result = await signIn.create({
+        identifier: formData.email,
+        password: formData.password,
+      });
 
-      // Check if 2FA is required
-      const requires2FA = Math.random() > 0.7 // 30% chance for demo
-
-      if (requires2FA) {
-        window.location.href = "/auth/two-factor"
+      if (result.status === "complete") {
+        await result.createdSessionId;
+        router.push("/dashboard");
+        router.refresh();
       } else {
-        window.location.href = "/dashboard"
+        console.log("Sign in not complete:", result);
       }
-    } catch (error) {
-      setErrors({ general: "Invalid email or password. Please try again." })
+    } catch (error: any) {
+      console.error('Login error:', error);
+      if (error.message?.includes("already signed in")) {
+        router.push("/dashboard");
+      } else {
+        setErrors({ general: "Invalid email or password. Please try again." })
+      }
     } finally {
       setIsLoading(false)
     }
