@@ -5,12 +5,22 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Menu, X, Heart } from "lucide-react"
 import { useAuthModals } from "@/components/auth/auth-modals"
+import {
+  ClerkProvider,
+  SignInButton,
+  SignUpButton,
+  SignedIn,
+  SignedOut,
+  UserButton,
+} from '@clerk/nextjs'
 
 export function Navigation() {
   const [isOpen, setIsOpen] = useState(false)
   const { openSignup, openLogin } = useAuthModals()
 
   return (
+    <ClerkProvider>
+
     <nav className="bg-white border-b border-gray-200 sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
@@ -31,12 +41,19 @@ export function Navigation() {
             <Link href="/start" className="text-gray-700 hover:text-emerald-600 font-medium">
               Start a Fundraiser
             </Link>
+           
+            <SignedIn>
+              <UserButton />
+            </SignedIn>
+            <SignedOut>
             <Button variant="ghost" onClick={openLogin} className="text-gray-700 hover:text-emerald-600 font-medium">
               Login
             </Button>
             <Button onClick={openSignup} className="bg-emerald-600 hover:bg-emerald-700 text-white">
               Sign Up
             </Button>
+            </SignedOut>
+
           </div>
 
           {/* Mobile menu button */}
@@ -73,6 +90,7 @@ export function Navigation() {
         )}
       </div>
     </nav>
+    </ClerkProvider>
   )
 }
 export default Navigation

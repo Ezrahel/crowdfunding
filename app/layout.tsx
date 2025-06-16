@@ -21,15 +21,15 @@ export default function RootLayout({
 }) {
   return (
     <ClerkProvider>
-      <html lang="en" suppressHydrationWarning>
-        <body className={inter.className}>
-          <AuthModalsProvider>
-            <Navigation />
-            <main className="min-h-screen">{children}</main>
-            <ConditionalFooter />
-          </AuthModalsProvider>
-        </body>
-      </html>
+    <html lang="en" suppressHydrationWarning>
+      <body className={inter.className}>
+        <AuthModalsProvider>
+          <Navigation />
+          <main className="min-h-screen">{children}</main>
+          <ConditionalFooter />
+        </AuthModalsProvider>
+      </body>
+    </html>
     </ClerkProvider>
   )
 }

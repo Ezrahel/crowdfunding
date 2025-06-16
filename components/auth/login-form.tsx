@@ -87,7 +87,7 @@ export default function LoginForm() {
       if (result.status === "complete") {
         await result.createdSessionId;
         router.push("/dashboard");
-        router.refresh();
+        // router.refresh();
       } else {
         console.log("Sign in not complete:", result);
       }

@@ -1,6 +1,6 @@
 "use client"
 import type { FormEvent } from "react"
-import type React from "react"
+// import type React from "react"
 import axios from "axios"
 import { useState } from "react"
 import Link from "next/link"
@@ -17,8 +17,11 @@ import PasswordStrength from "./password-strength"
 import { validateEmail, validatePassword, validateName } from "@/lib/auth-validation"
 import { useRouter } from 'next/navigation'
 import { useSignUp } from "@clerk/nextjs";
-
+import * as React from 'react'
+import EmailVerification from "./email-verification"
 interface FormData {
+  firstName: string
+  lastName: string
   username: string
   email: string
   password: string
@@ -27,6 +30,8 @@ interface FormData {
 }
 
 interface FormErrors {
+  firstName?: string
+  lastName?: string
   username?: string
   email?: string
   password?: string
@@ -39,6 +44,8 @@ export default function SignupForm() {
   const router = useRouter()
   const { isLoaded, signUp, setActive } = useSignUp()
   const [formData, setFormData] = useState<FormData>({
+    firstName: "",
+    lastName: "",
     username: "",
     email: "",
     password: "",
@@ -51,7 +58,8 @@ export default function SignupForm() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [touchedFields, setTouchedFields] = useState<{ [key: string]: boolean }>({})
-
+  const [verifying, setVerifying] = React.useState(false)
+  const [code, setCode] = React.useState('')
   const validateField = (field: keyof FormData, value: string | boolean) => {
     let error = ""
 
@@ -114,25 +122,35 @@ export default function SignupForm() {
     setErrors((prev) => ({ ...prev, [field]: error || undefined }))
   }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  //  const handleSubmit = async (e: React.FormEvent) => {
+  //   e.preventDefault()
 
-    if (!validateForm()) return
+  //   if (!isLoaded) return
 
-    setIsLoading(true)
+  //   // Start the sign-up process using the email and password provided
+  //   try {
+  //     await signUp.create({
+  //       emailAddress: formData.email,
+  //       password: formData.password,
+  //       username: formData.username,
 
-    try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1500))
 
-      // Redirect to email verification page
-      window.location.href = "/auth/email-not-verified"
-    } catch (error) {
-      setErrors({ general: "Registration failed. Please try again." })
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  //     });
+
+  //     // Send the user an email with the verification code
+  //     await signUp.prepareEmailAddressVerification({
+  //       strategy: 'email_code',
+  //     })
+
+  //     // Set 'verifying' true to display second form
+  //     // and capture the OTP code
+  //     setVerifying(true)
+  //   } catch (err: any) {
+  //     // See https://clerk.com/docs/custom-flows/error-handling
+  //     // for more info on error handling
+  //     console.error(JSON.stringify(err, null, 2))
+  //   }
+  // }
 
   const handleSignup = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -142,49 +160,41 @@ export default function SignupForm() {
     setIsLoading(true);
 
     try {
+      const captchaElement = document.getElementById("clerk-captcha");
+    if (!captchaElement) {
+      throw new Error("CAPTCHA element not found!");
+    }
+
       const result = await signUp.create({
         emailAddress: formData.email,
         password: formData.password,
         username: formData.username,
-      });
+        firstName: formData.firstName,
+      })
 
-      if (result.status === "needs_email_verification") {
-        sessionStorage.setItem('pendingSignUp', JSON.stringify({
-          email: formData.email,
-          username: formData.username
-        }));
-        router.push("/auth/email-not-verified");
-      } else if (result.status === "complete") {
-        await result.createdSessionId;
-        router.push("/dashboard");
-      } else {
-        console.log("Sign up not complete:", result);
-      }
-    } catch (error: any) {
-      console.error('Signup error:', error);
-      
-      if (error.errors) {
-        const newErrors: FormErrors = {};
-        
-        error.errors.forEach((err: any) => {
-          if (err.meta?.param_name === 'email_address') {
-            newErrors.email = err.message;
-          } else if (err.meta?.param_name === 'username') {
-            newErrors.username = err.message;
-          }
-        });
-        
-        setErrors(Object.keys(newErrors).length > 0 ? newErrors : { 
-          general: "Registration failed. Please try again." 
-        });
-      } else {
-        setErrors({ general: "Registration failed. Please try again." });
-      }
-    } finally {
-      setIsLoading(false);
+       await signUp.prepareEmailAddressVerification({
+        strategy: 'email_code',
+      })
+
+      // Set 'verifying' true to display second form
+      // and capture the OTP code
+      setVerifying(true)
+    } catch (err: any) {
+      // See https://clerk.com/docs/custom-flows/error-handling
+      // for more info on error handling
+      console.error(JSON.stringify(err, null, 2))
     }
-  };
+  }
 
+  
+  if (verifying) {
+    return(
+<>
+
+<EmailVerification/>
+</>
+    )
+  }
   return (
     <AuthLayout>
       <Card className="w-full max-w-md">
@@ -213,7 +223,41 @@ export default function SignupForm() {
           </div>
 
           <form onSubmit={handleSignup} className="space-y-4">
-            <div className="space-y-2">
+            <div className="space-y-2" id ="clerk-captcha">
+              <Label htmlFor="firstname">Firstname</Label>
+              <div className="relative">
+                <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                <Input
+                  id="firstname"
+                  type="text"
+                  placeholder="Israel"
+                  className={`pl-10 ${errors.firstName ? "border-red-500 focus:border-red-500 focus:ring-red-500" : ""}`}
+                  value={formData.firstName}
+                  onChange={(e) => handleInputChange("firstName", e.target.value)}
+                  onBlur={() => handleBlur("firstName")}
+                  disabled={isLoading}
+                />
+              </div>
+              {errors.username && <p className="text-sm text-red-500">{errors.username}</p>}
+            </div>
+            <div className="space-y-2" id ="clerk-captcha">
+              <Label htmlFor="lastname">Lastname</Label>
+              <div className="relative">
+                <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                <Input
+                  id="lastname"
+                  type="text"
+                  placeholder="Ademola"
+                  className={`pl-10 ${errors.lastName ? "border-red-500 focus:border-red-500 focus:ring-red-500" : ""}`}
+                  value={formData.lastName}
+                  onChange={(e) => handleInputChange("lastName", e.target.value)}
+                  onBlur={() => handleBlur("lastName")}
+                  disabled={isLoading}
+                />
+              </div>
+              {errors.username && <p className="text-sm text-red-500">{errors.username}</p>}
+            </div>
+            <div className="space-y-2" id ="clerk-captcha">
               <Label htmlFor="username">Username</Label>
               <div className="relative">
                 <User className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
@@ -344,4 +388,5 @@ export default function SignupForm() {
       </Card>
     </AuthLayout>
   )
+
 }

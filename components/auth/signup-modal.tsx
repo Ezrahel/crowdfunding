@@ -123,15 +123,13 @@ const SignupModal = ({ isOpen, onClose, onSwitchToLogin }: SignupModalProps) => 
       setErrors(validationErrors)
       return
     }
-
-    // Simulate API call
+    //api call demo
     try {
       setIsSubmitting(true)
-      // Replace with actual API call
       await new Promise((resolve) => setTimeout(resolve, 1500))
       console.log("Form submitted:", formData)
       onClose()
-      router.push("/auth/email-not-verified") // Redirect to email verification page
+      router.push("/auth/email-not-verified") 
     } catch (error) {
       console.error("Signup failed:", error)
       setErrors({ form: "Signup failed. Please try again." })

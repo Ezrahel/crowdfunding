@@ -173,5 +173,4 @@ func ClerkUserMgt(ctx *gin.Context) {
 
 	fmt.Printf("Successfully created user: %+v\n", newUser)
 	ctx.JSON(http.StatusCreated, newUser)
-	http.Redirect(ctx.Writer, ctx.Request, "http://localhost:3000/dashboard", http.StatusTemporaryRedirect)
 }

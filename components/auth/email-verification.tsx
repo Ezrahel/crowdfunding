@@ -51,6 +51,7 @@ export default function EmailVerification() {
         router.push("/dashboard");
       } else {
         console.log("Verification not complete:", result);
+        console.log("Missing fields:", result.requiredFields);
       }
     } catch (error: any) {
       console.error('Verification error:', error);
@@ -84,10 +85,10 @@ export default function EmailVerification() {
 
         <CardContent className="space-y-4">
           {error && (
-            <Alert variant="destructive">
-              <XCircle className="h-4 w-4" />
+          <Alert variant="destructive">
+            <XCircle className="h-4 w-4" />
               <AlertDescription>{error}</AlertDescription>
-            </Alert>
+          </Alert>
           )}
 
           <form onSubmit={handleVerification} className="space-y-4">
@@ -107,13 +108,13 @@ export default function EmailVerification() {
 
             <Button type="submit" disabled={isLoading} className="w-full">
               {isLoading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Verifying...
-                </>
-              ) : (
+              </>
+            ) : (
                 "Verify Email"
-              )}
+            )}
             </Button>
           </form>
         </CardContent>
