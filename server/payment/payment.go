@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	ErcasSecretKey = ""
-	ErcasApiKey    = ""
+	ErcasSecretKey = os.Getenv("ErcasSecretKey")
+	ErcasApiKey    = os.Getenv("ErcasApiKey")
 )
 
 // Transaction status constants
