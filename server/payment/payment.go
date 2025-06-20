@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	ErcasSecretKey = "ECRS-TEST-SK11jU5xRkSzVCt9dckli3AlzkQIXwezH1FMfgDy5f"
-	ErcasApiKey    = "ECRS-TEST-AKRJjS3IyHEeC29BqvjrWPlD6aQNQS0Dfun98Yus0w"
+	ErcasSecretKey = ""
+	ErcasApiKey    = ""
 )
 
 // Transaction status constants
