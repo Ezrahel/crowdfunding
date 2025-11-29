@@ -15,10 +15,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const (
-	ErcasSecretKey = os.Getenv("ErcasSecretKey")
-	ErcasApiKey    = os.Getenv("ErcasApiKey")
-)
+var ErcasSecretKey = os.Getenv("ErcasSecretKey")
+var ErcasApiKey = os.Getenv("ErcasApiKey")
 
 // Transaction status constants
 const (
