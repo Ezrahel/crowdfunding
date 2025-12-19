@@ -1,6 +1,22 @@
-import { clerkMiddleware } from '@clerk/nextjs/server';
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
 
-export default clerkMiddleware();
+export function middleware(request: NextRequest) {
+  // Allow public routes
+  const publicRoutes = ['/', '/auth/login', '/auth/signup', '/auth/forgot-password', '/explore', '/about', '/contact', '/faq', '/help'];
+  const { pathname } = request.nextUrl;
+
+  // Check if route is public
+  const isPublicRoute = publicRoutes.some(route => pathname === route || pathname.startsWith('/api/auth'));
+
+  if (isPublicRoute) {
+    return NextResponse.next();
+  }
+
+  // For protected routes, we'll check auth on the client side
+  // The actual token verification happens in the Go backend
+  return NextResponse.next();
+}
 
 export const config = {
   matcher: [

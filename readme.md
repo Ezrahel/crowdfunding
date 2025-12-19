@@ -15,9 +15,12 @@ Welcome to **FundRaising**, the modern crowdfunding platform where ideas turn in
 
 ### 🔐 Secure & Seamless Authentication
 
+* Firebase Authentication with email/password
 * Social logins (Google, Facebook, Apple)
-* Email/password authentication
-* “Remember Me” for faster access
+* Email verification
+* Password reset functionality
+* "Remember Me" for faster access
+* Production-ready Go backend for auth operations
 
 ### 📢 Campaign Management Made Simple
 
@@ -59,7 +62,9 @@ Welcome to **FundRaising**, the modern crowdfunding platform where ideas turn in
 | **Frontend** | Next.js 14, React 18, TypeScript         |
 | **Styling**  | Tailwind CSS, Shadcn UI                  |
 | **Charts**   | Recharts                                 |
-| **Auth**     | NextAuth.js with OAuth Providers         |
+| **Auth**     | Firebase Authentication                   |
+| **Backend**  | Go (Golang) with Firebase Admin SDK      |
+| **Database** | Firestore                                 |
 | **UI/UX**    | Responsive design, accessible components |
 
 ---
@@ -79,23 +84,55 @@ cd fundraising
 npm install
 ```
 
-### 🔐 3. Set Up Environment Variables
+### 🔐 3. Set Up Firebase
 
-Create a `.env.local` file and fill it with your secrets. Example:
+1. Create a Firebase project at [Firebase Console](https://console.firebase.google.com/)
+2. Enable Authentication (Email/Password and OAuth providers)
+3. Create a Firestore database
+4. Download your service account key
+
+See [FIREBASE_SETUP.md](./FIREBASE_SETUP.md) for detailed instructions.
+
+### 🔑 4. Set Up Environment Variables
+
+Create a `.env.local` file in the root directory:
 
 ```env
-NEXTAUTH_SECRET=your-secret
-NEXTAUTH_URL=http://localhost:3000
-DATABASE_URL=your-database-url
+NEXT_PUBLIC_FIREBASE_API_KEY=your_api_key
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your_project_id
+NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
+NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+NEXT_PUBLIC_FIREBASE_APP_ID=your_app_id
+NEXT_PUBLIC_API_URL=http://localhost:8090
 ```
 
-### ▶️ 4. Run Locally
+Create a `server/.env` file:
 
+```env
+PORT=8090
+ALLOWED_ORIGIN=http://localhost:3000
+GOOGLE_APPLICATION_CREDENTIALS=./israelfirebase.json
+```
+
+Place your Firebase service account JSON file as `server/israelfirebase.json`
+
+### ▶️ 5. Run Locally
+
+**Start the Go Backend:**
+```bash
+cd server
+go run cmd/api/main.go
+```
+
+**Start the Next.js Frontend (in a new terminal):**
 ```bash
 npm run dev
 ```
 
 Visit **[http://localhost:3000](http://localhost:3000)** in your browser.
+
+The Go API server will run on `http://localhost:8090`
 
 ---
 
@@ -105,10 +142,15 @@ Visit **[http://localhost:3000](http://localhost:3000)** in your browser.
 fundraise/
 ├── app/                 # App Router pages and layouts
 ├── components/          # Reusable UI components
-├── lib/                 # Utility functions and API handlers
+├── contexts/            # React contexts (Auth, etc.)
+├── lib/                 # Utility functions and Firebase config
+├── server/              # Go backend
+│   ├── auth/           # Authentication handlers
+│   ├── campaign/        # Campaign handlers
+│   ├── cmd/api/        # Main application entry
+│   └── internal/       # Internal server code
 ├── styles/              # Global and scoped styles
 ├── public/              # Static assets
-├── .env.local.example   # Sample environment file
 └── ...
 ```
 

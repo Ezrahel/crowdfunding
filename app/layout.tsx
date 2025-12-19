@@ -5,7 +5,7 @@ import "./globals.css"
 import { Navigation } from "@/components/navigation"
 import { AuthModalsProvider } from "@/components/auth/auth-modals"
 import { ConditionalFooter } from "@/components/conditionalFooter"
-import { ClerkProvider } from '@clerk/nextjs'
+import { AuthProvider } from "@/contexts/auth-context"
 
 const inter = Inter({ subsets: ["latin"] })
 
@@ -20,16 +20,16 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <ClerkProvider>
     <html lang="en" suppressHydrationWarning>
       <body className={inter.className}>
-        <AuthModalsProvider>
-          <Navigation />
-          <main className="min-h-screen">{children}</main>
-          <ConditionalFooter />
-        </AuthModalsProvider>
+        <AuthProvider>
+          <AuthModalsProvider>
+            <Navigation />
+            <main className="min-h-screen">{children}</main>
+            <ConditionalFooter />
+          </AuthModalsProvider>
+        </AuthProvider>
       </body>
     </html>
-    </ClerkProvider>
   )
 }

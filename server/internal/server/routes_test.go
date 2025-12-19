@@ -1,16 +1,18 @@
 package server
 
 import (
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestHelloWorldHandler(t *testing.T) {
 	s := &Server{}
+	mux := http.NewServeMux()
 	r := gin.New()
-	r.GET("/", s.HelloWorldHandler)
+	mux.HandleFunc("/", s.HelloWorldHandler)
 	// Create a test HTTP request
 	req, err := http.NewRequest("GET", "/", nil)
 	if err != nil {

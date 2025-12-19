@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"time"
 
+	"server/auth"
+	"server/firebase"
 	"server/internal/server"
 )
 
@@ -38,16 +40,34 @@ func gracefulShutdown(apiServer *http.Server, done chan bool) {
 }
 
 func main() {
+	// Initialize Firebase Auth
+	if err := auth.InitAuthClient(); err != nil {
+		log.Fatalf("Failed to initialize Firebase Auth Client: %v", err)
+	}
+	fmt.Println("Firebase Auth client initialized successfully")
 
-	server := server.NewServer()
+	// Initialize Firestore
+	if err := firebase.InitFirestore(); err != nil {
+		log.Fatalf("Failed to initialize Firestore: %v", err)
+	}
+	fmt.Println("Firestore client initialized successfully")
+
+	// Get Firestore client and initialize routes
+	firestoreClient, err := firebase.GetFirestoreClient()
+	if err != nil {
+		log.Fatalf("Failed to get Firestore client: %v", err)
+	}
+	server.InitRoutes(firestoreClient)
+
+	apiServer := server.NewServer()
 
 	// Create a done channel to signal when the shutdown is complete
 	done := make(chan bool, 1)
 
 	// Run graceful shutdown in a separate goroutine
-	go gracefulShutdown(server, done)
+	go gracefulShutdown(apiServer, done)
 
-	err := server.ListenAndServe()
+	err = apiServer.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {
 		panic(fmt.Sprintf("http server error: %s", err))
 	}

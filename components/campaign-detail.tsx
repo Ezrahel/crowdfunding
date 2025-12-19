@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import Image from "next/image"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,7 +9,8 @@ import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Separator } from "@/components/ui/separator"
 import { DonationModal } from "@/components/donation-modal"
-import { Heart, Flag, MapPin, Facebook, Twitter, Mail, LinkIcon } from "lucide-react"
+import { Heart, Flag, MapPin, Facebook, Twitter, Mail, LinkIcon, MessageCircle } from "lucide-react"
+import { usePathname } from "next/navigation"
 
 interface CampaignDetailProps {
   campaignId: string
@@ -17,9 +18,17 @@ interface CampaignDetailProps {
 
 export function CampaignDetail({ campaignId }: CampaignDetailProps) {
   const [isDonationModalOpen, setIsDonationModalOpen] = useState(false)
-
+  const [campaign, setCampaign] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const pathname = usePathname()
+  
+  // Get current URL for sharing
+  const shareUrl = typeof window !== 'undefined' 
+    ? `${window.location.origin}${pathname}`
+    : `https://yourdomain.com/campaign/${campaignId}`
+  
   // Mock data - in real app, this would be fetched based on campaignId
-  const campaign = {
+  const mockCampaign = {
     id: campaignId,
     title: "Help Sarah's Medical Treatment",
     description: "Supporting Sarah through her cancer treatment journey",
@@ -70,7 +79,34 @@ Thank you for your kindness and generosity.`,
     ],
   }
 
-  const progressPercentage = (campaign.raised / campaign.goal) * 100
+  // Fetch campaign data
+  useEffect(() => {
+    const fetchCampaign = async () => {
+      try {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8090'
+        const response = await fetch(`${apiUrl}/api/campaign?id=${campaignId}`)
+        if (response.ok) {
+          const data = await response.json()
+          setCampaign(data)
+        } else {
+          // Fallback to mock data if API fails
+          setCampaign(mockCampaign)
+        }
+      } catch (error) {
+        // Fallback to mock data on error
+        setCampaign(mockCampaign)
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchCampaign()
+  }, [campaignId])
+
+  // Use campaign data or fallback to mock
+  const campaignData = campaign || mockCampaign
+  const shareText = `Help support ${campaignData.title}! Every donation makes a difference.`
+
+  const progressPercentage = campaignData ? (campaignData.raised / campaignData.goal) * 100 : 0
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("en-US", {
@@ -81,11 +117,71 @@ Thank you for your kindness and generosity.`,
     }).format(amount)
   }
 
+  // Social sharing functions
+  const shareToWhatsApp = () => {
+    const url = `https://wa.me/?text=${encodeURIComponent(`${shareText} ${shareUrl}`)}`
+    window.open(url, '_blank')
+  }
+
+  const shareToFacebook = () => {
+    const url = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}`
+    window.open(url, '_blank', 'width=600,height=400')
+  }
+
+  const shareToTwitter = () => {
+    const url = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}&url=${encodeURIComponent(shareUrl)}`
+    window.open(url, '_blank', 'width=600,height=400')
+  }
+
+  const shareViaEmail = () => {
+    const subject = encodeURIComponent(`Help support ${campaign.title}`)
+    const body = encodeURIComponent(`${shareText}\n\n${shareUrl}`)
+    window.location.href = `mailto:?subject=${subject}&body=${body}`
+  }
+
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      // You could show a toast notification here
+      alert('Link copied to clipboard!')
+    } catch (err) {
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea')
+      textArea.value = shareUrl
+      document.body.appendChild(textArea)
+      textArea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textArea)
+      alert('Link copied to clipboard!')
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-emerald-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading campaign...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!campaignData) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-gray-600">Campaign not found</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Hero Image */}
       <div className="relative h-96 w-full">
-        <Image src={campaign.image || "/placeholder.svg"} alt={campaign.title} fill className="object-cover" />
+        <Image src={campaignData.image || "/placeholder.svg"} alt={campaignData.title} fill className="object-cover" />
         <div className="absolute inset-0 bg-black/20" />
       </div>
 
@@ -95,23 +191,23 @@ Thank you for your kindness and generosity.`,
           <div className="lg:col-span-2 space-y-8">
             {/* Campaign Header */}
             <div>
-              <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">{campaign.title}</h1>
-              <p className="text-lg text-gray-600 mb-6">{campaign.description}</p>
+              <h1 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">{campaignData.title}</h1>
+              <p className="text-lg text-gray-600 mb-6">{campaignData.description}</p>
 
               {/* Progress Section */}
               <Card>
                 <CardContent className="p-6">
                   <div className="space-y-4">
                     <div className="flex justify-between items-center">
-                      <span className="text-2xl font-bold text-gray-900">{formatCurrency(campaign.raised)}</span>
-                      <span className="text-gray-600">of {formatCurrency(campaign.goal)} goal</span>
+                      <span className="text-2xl font-bold text-gray-900">{formatCurrency(campaignData.raised || 0)}</span>
+                      <span className="text-gray-600">of {formatCurrency(campaignData.goal || 0)} goal</span>
                     </div>
 
                     <Progress value={progressPercentage} className="h-3" />
 
                     <div className="grid grid-cols-3 gap-4 text-center">
                       <div>
-                        <div className="text-2xl font-bold text-gray-900">{campaign.donors}</div>
+                        <div className="text-2xl font-bold text-gray-900">{campaignData.donors || 0}</div>
                         <div className="text-sm text-gray-600">donors</div>
                       </div>
                       <div>
@@ -119,7 +215,7 @@ Thank you for your kindness and generosity.`,
                         <div className="text-sm text-gray-600">funded</div>
                       </div>
                       <div>
-                        <div className="text-2xl font-bold text-gray-900">{campaign.daysLeft}</div>
+                        <div className="text-2xl font-bold text-gray-900">{campaignData.daysLeft || 0}</div>
                         <div className="text-sm text-gray-600">days left</div>
                       </div>
                     </div>
@@ -129,51 +225,55 @@ Thank you for your kindness and generosity.`,
             </div>
 
             {/* Story Section */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Campaign Story</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="prose max-w-none">
-                  {campaign.story.split("\n\n").map((paragraph, index) => (
-                    <p key={index} className="mb-4 text-gray-700 leading-relaxed">
-                      {paragraph}
-                    </p>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+            {campaignData.story && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Campaign Story</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="prose max-w-none">
+                    {campaignData.story.split("\n\n").map((paragraph: string, index: number) => (
+                      <p key={index} className="mb-4 text-gray-700 leading-relaxed">
+                        {paragraph}
+                      </p>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Updates Section */}
-            <Card>
-              <CardHeader>
-                <CardTitle>Updates</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {campaign.updates.map((update, index) => (
-                  <div key={index}>
-                    <div className="flex items-center space-x-2 mb-2">
-                      <Badge variant="outline">{update.date}</Badge>
-                      <h4 className="font-semibold">{update.title}</h4>
+            {campaignData.updates && campaignData.updates.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle>Updates</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {campaignData.updates.map((update: any, index: number) => (
+                    <div key={index}>
+                      <div className="flex items-center space-x-2 mb-2">
+                        <Badge variant="outline">{update.date}</Badge>
+                        <h4 className="font-semibold">{update.title}</h4>
+                      </div>
+                      <p className="text-gray-600">{update.content}</p>
+                      {index < campaignData.updates.length - 1 && <Separator className="mt-4" />}
                     </div>
-                    <p className="text-gray-600">{update.content}</p>
-                    {index < campaign.updates.length - 1 && <Separator className="mt-4" />}
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           {/* Sidebar */}
           <div className="space-y-6">
-            {/* Donate Button */}
+            {/* Help Button */}
             <Button
               size="lg"
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-lg py-6"
+              className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-lg py-6 shadow-lg"
               onClick={() => setIsDonationModalOpen(true)}
             >
               <Heart className="w-5 h-5 mr-2" />
-              Donate Now
+              Help Now
             </Button>
 
             {/* Share Buttons */}
@@ -183,19 +283,39 @@ Thank you for your kindness and generosity.`,
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 gap-3">
-                  <Button variant="outline" size="sm">
-                    <Facebook className="w-4 h-4 mr-2" />
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={shareToWhatsApp}
+                    className="hover:bg-green-50 hover:border-green-300"
+                  >
+                    <MessageCircle className="w-4 h-4 mr-2 text-green-600" />
+                    WhatsApp
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={shareToFacebook}
+                    className="hover:bg-blue-50 hover:border-blue-300"
+                  >
+                    <Facebook className="w-4 h-4 mr-2 text-blue-600" />
                     Facebook
                   </Button>
-                  <Button variant="outline" size="sm">
-                    <Twitter className="w-4 h-4 mr-2" />
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={shareToTwitter}
+                    className="hover:bg-sky-50 hover:border-sky-300"
+                  >
+                    <Twitter className="w-4 h-4 mr-2 text-sky-500" />
                     Twitter
                   </Button>
-                  <Button variant="outline" size="sm">
-                    <Mail className="w-4 h-4 mr-2" />
-                    Email
-                  </Button>
-                  <Button variant="outline" size="sm">
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={copyLink}
+                    className="hover:bg-gray-50"
+                  >
                     <LinkIcon className="w-4 h-4 mr-2" />
                     Copy Link
                   </Button>
@@ -211,16 +331,20 @@ Thank you for your kindness and generosity.`,
               <CardContent>
                 <div className="flex items-start space-x-4">
                   <Avatar className="w-16 h-16">
-                    <AvatarImage src={campaign.organizer.avatar || "/placeholder.svg"} />
-                    <AvatarFallback>JS</AvatarFallback>
+                    <AvatarImage src={campaignData.organizer?.avatar || "/placeholder.svg"} />
+                    <AvatarFallback>{campaignData.organizer?.name?.substring(0, 2).toUpperCase() || "U"}</AvatarFallback>
                   </Avatar>
                   <div className="flex-1">
-                    <h4 className="font-semibold text-gray-900">{campaign.organizer.name}</h4>
-                    <div className="flex items-center text-sm text-gray-600 mt-1">
-                      <MapPin className="w-3 h-3 mr-1" />
-                      {campaign.organizer.location}
-                    </div>
-                    <p className="text-sm text-gray-600 mt-2">{campaign.organizer.bio}</p>
+                    <h4 className="font-semibold text-gray-900">{campaignData.organizer?.name || "Organizer"}</h4>
+                    {campaignData.organizer?.location && (
+                      <div className="flex items-center text-sm text-gray-600 mt-1">
+                        <MapPin className="w-3 h-3 mr-1" />
+                        {campaignData.organizer.location}
+                      </div>
+                    )}
+                    {campaignData.organizer?.bio && (
+                      <p className="text-sm text-gray-600 mt-2">{campaignData.organizer.bio}</p>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -232,7 +356,7 @@ Thank you for your kindness and generosity.`,
                 <CardTitle className="text-lg">Donation Tiers</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                {campaign.donationTiers.map((tier, index) => (
+                {campaignData.donationTiers?.map((tier: any, index: number) => (
                   <div key={index} className="border rounded-lg p-3 hover:bg-gray-50 cursor-pointer">
                     <div className="font-semibold text-emerald-600">{formatCurrency(tier.amount)}</div>
                     <div className="text-sm text-gray-600">{tier.description}</div>
@@ -250,7 +374,7 @@ Thank you for your kindness and generosity.`,
         </div>
       </div>
 
-      <DonationModal isOpen={isDonationModalOpen} onClose={() => setIsDonationModalOpen(false)} campaign={campaign} />
+      <DonationModal isOpen={isDonationModalOpen} onClose={() => setIsDonationModalOpen(false)} campaign={campaignData} />
     </div>
   )
 }

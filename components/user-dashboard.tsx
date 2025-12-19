@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useAuth, useUser } from "@clerk/nextjs"
+import { useAuth } from "@/contexts/auth-context"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -57,13 +57,17 @@ import {
   CheckCircle,
   ArrowUpRight,
   ArrowDownRight,
+  Building2,
+  AlertCircle,
+  ArrowRight,
 } from "lucide-react"
+import { useRouter } from "next/navigation"
 
 export function UserDashboard() {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState("overview")
   const [timeRange, setTimeRange] = useState("30d")
-  const { getToken, isLoaded, isSignedIn } = useAuth()
-  const { user } = useUser()
+  const { user, loading } = useAuth()
   const [userStats, setUserStats] = useState({
     totalCampaigns: 0,
     activeCampaigns: 0,
@@ -78,36 +82,90 @@ export function UserDashboard() {
     totalViews: 0,
     socialShares: 0,
   })
+  interface OnboardingStatus {
+    status: "pending" | "in_progress" | "completed" | "skipped"
+    has_virtual_account: boolean
+    virtual_account?: {
+      account_number: string
+      account_name: string
+      bank: string
+    }
+  }
+  const [onboardingStatus, setOnboardingStatus] = useState<OnboardingStatus | null>(null)
 
   useEffect(() => {
     const fetchUserData = async () => {
-      if (!isLoaded || !isSignedIn) return;
+      if (!user) return;
 
       try {
-        const token = await getToken();
+        const token = await user.getIdToken();
         if (!token) return;
 
-        // Fetch user-specific data from your backend
-        const response = await fetch('http://localhost:8000/api/v1/user/stats', {
-          headers: {
-            'Authorization': `Bearer ${token}`
-          }
-        });
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8090'
+        
+        // Fetch user stats with timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        
+        try {
+          const statsResponse = await fetch(`${apiUrl}/api/user/stats`, {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            },
+            signal: controller.signal,
+          });
 
-        if (response.ok) {
-          const data = await response.json();
-          setUserStats(data);
+          clearTimeout(timeoutId);
+          if (statsResponse.ok) {
+            const data = await statsResponse.json();
+            setUserStats(data);
+          }
+        } catch (err: any) {
+          clearTimeout(timeoutId);
+          if (err.name !== 'AbortError') {
+            throw err;
+          }
+        }
+
+        // Fetch onboarding status with timeout
+        const controller2 = new AbortController();
+        const timeoutId2 = setTimeout(() => controller2.abort(), 30000);
+        
+        try {
+          const onboardingResponse = await fetch(`${apiUrl}/api/onboarding/status`, {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            },
+            signal: controller2.signal,
+          });
+
+          clearTimeout(timeoutId2);
+          if (onboardingResponse.ok) {
+            const onboardingData = await onboardingResponse.json();
+            setOnboardingStatus(onboardingData);
+          }
+        } catch (err: any) {
+          clearTimeout(timeoutId2);
+          // Silently fail - onboarding status is not critical
         }
       } catch (error) {
-        console.error('Error fetching user data:', error);
+        // Error logged but not shown to user
+        // In production, send to error tracking service
       }
     };
 
     fetchUserData();
-  }, [getToken, isLoaded, isSignedIn]);
+  }, [user]);
 
-  if (!isLoaded || !isSignedIn) {
-    return <div>Loading...</div>;
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+          <p className="text-gray-600">Loading dashboard...</p>
+        </div>
+      </div>
+    );
   }
 
   // Enhanced mock data with more realistic metrics
@@ -350,7 +408,7 @@ export function UserDashboard() {
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
               <p className="text-gray-600 mt-1">
-                Welcome back {user?.username || user?.firstName || 'User'}! Here's what's happening with your campaigns.
+                Welcome back {user?.displayName || user?.email || 'User'}! Here's what's happening with your campaigns.
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -1140,6 +1198,57 @@ export function UserDashboard() {
                   </div>
                 </CardContent>
               </Card>
+
+              {/* Onboarding Status */}
+              {onboardingStatus && onboardingStatus.status !== "completed" && (
+                <Card className="mb-6 border-2 border-amber-200 bg-amber-50">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <AlertCircle className="h-5 w-5 text-amber-600" />
+                      Complete Your Onboarding
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <p className="text-sm text-gray-700">
+                      Complete your KYC verification to get a dedicated virtual account for receiving donations.
+                    </p>
+                    <Button
+                      onClick={() => router.push("/onboarding")}
+                      className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700"
+                    >
+                      Complete Onboarding
+                      <ArrowRight className="ml-2 h-4 w-4" />
+                    </Button>
+                  </CardContent>
+                </Card>
+              )}
+
+              {onboardingStatus?.status === "completed" && onboardingStatus.virtual_account && (
+                <Card className="mb-6 border-2 border-emerald-200 bg-emerald-50">
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <CheckCircle className="h-5 w-5 text-emerald-600" />
+                      Virtual Account Active
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                      <div>
+                        <p className="text-xs text-gray-600">Account Number</p>
+                        <p className="text-lg font-bold text-gray-900">{onboardingStatus.virtual_account.account_number}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-600">Account Name</p>
+                        <p className="text-sm font-semibold text-gray-900">{onboardingStatus.virtual_account.account_name}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-600">Bank</p>
+                        <p className="text-sm font-semibold text-gray-900">{onboardingStatus.virtual_account.bank}</p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Account Settings */}
               <Card>

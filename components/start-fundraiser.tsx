@@ -1,7 +1,11 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Button } from "@/components/ui/button"
+import { useAuth } from "@/contexts/auth-context"
+import { useRouter } from "next/navigation"
+import { uploadFile, uploadFiles, generateCampaignMediaPath } from "@/lib/storage"
+import Image from "next/image"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -32,6 +36,7 @@ import {
   Plus,
   X,
   Info,
+  Loader2,
 } from "lucide-react"
 
 const steps = [
@@ -74,9 +79,23 @@ const steps = [
 ]
 
 export function StartFundraiser() {
+  const { user } = useAuth()
+  const router = useRouter()
   const [currentStep, setCurrentStep] = useState(1)
   const [completedFields, setCompletedFields] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({})
+  
+  // File input refs
+  const coverImageInputRef = useRef<HTMLInputElement>(null)
+  const additionalImagesInputRef = useRef<HTMLInputElement>(null)
+  const videoInputRef = useRef<HTMLInputElement>(null)
+  
+  // Image preview URLs
+  const [coverImagePreview, setCoverImagePreview] = useState<string | null>(null)
+  const [additionalImagesPreview, setAdditionalImagesPreview] = useState<string[]>([])
+  const [videoPreview, setVideoPreview] = useState<string | null>(null)
 
   const [formData, setFormData] = useState({
     // Step 1: Campaign Basics
@@ -244,6 +263,282 @@ export function StartFundraiser() {
 
   const removeTag = (tag: string) => {
     setFormData({ ...formData, tags: formData.tags.filter((t) => t !== tag) })
+  }
+
+  // File upload handlers
+  const handleCoverImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      // Validate file
+      if (!file.type.startsWith('image/')) {
+        setErrors({ ...errors, coverImage: 'Please select an image file' })
+        return
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        setErrors({ ...errors, coverImage: 'Image size must be less than 10MB' })
+        return
+      }
+      
+      setFormData({ ...formData, coverImage: file })
+      const newErrors = { ...errors }
+      delete newErrors.coverImage
+      setErrors(newErrors)
+      
+      // Create preview
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        setCoverImagePreview(reader.result as string)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const handleAdditionalImagesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    if (files.length > 0) {
+      // Validate files
+      const validFiles: File[] = []
+      const newPreviews: string[] = []
+      
+      files.forEach((file, index) => {
+        if (!file.type.startsWith('image/')) {
+          setErrors({ ...errors, additionalImages: `File ${index + 1} is not an image` })
+          return
+        }
+        if (file.size > 10 * 1024 * 1024) {
+          setErrors({ ...errors, additionalImages: `Image ${index + 1} is too large (max 10MB)` })
+          return
+        }
+        if (formData.additionalImages.length + validFiles.length >= 10) {
+          setErrors({ ...errors, additionalImages: 'Maximum 10 additional images allowed' })
+          return
+        }
+        
+        validFiles.push(file)
+        
+        // Create preview
+        const reader = new FileReader()
+        reader.onloadend = () => {
+          newPreviews.push(reader.result as string)
+          if (newPreviews.length === validFiles.length) {
+            setAdditionalImagesPreview([...additionalImagesPreview, ...newPreviews])
+          }
+        }
+        reader.readAsDataURL(file)
+      })
+      
+      setFormData({ ...formData, additionalImages: [...formData.additionalImages, ...validFiles] })
+      const newErrors = { ...errors }
+      delete newErrors.additionalImages
+      setErrors(newErrors)
+    }
+  }
+
+  const handleVideoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      // Validate file
+      if (!file.type.startsWith('video/')) {
+        setErrors({ ...errors, video: 'Please select a video file' })
+        return
+      }
+      if (file.size > 100 * 1024 * 1024) {
+        setErrors({ ...errors, video: 'Video size must be less than 100MB' })
+        return
+      }
+      
+      setFormData({ ...formData, video: file })
+      const newErrors = { ...errors }
+      delete newErrors.video
+      setErrors(newErrors)
+      
+      // Create preview
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        setVideoPreview(reader.result as string)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const removeAdditionalImage = (index: number) => {
+    const newImages = formData.additionalImages.filter((_, i) => i !== index)
+    const newPreviews = additionalImagesPreview.filter((_, i) => i !== index)
+    setFormData({ ...formData, additionalImages: newImages })
+    setAdditionalImagesPreview(newPreviews)
+  }
+
+  const removeVideo = () => {
+    setFormData({ ...formData, video: null })
+    setVideoPreview(null)
+    if (videoInputRef.current) {
+      videoInputRef.current.value = ''
+    }
+  }
+
+  const handleLaunchCampaign = async () => {
+    if (!user) {
+      setErrors({ general: 'You must be logged in to create a campaign' })
+      return
+    }
+
+    if (!validateCurrentStep()) {
+      return
+    }
+
+    setIsSubmitting(true)
+    setErrors({})
+
+    try {
+      // Get auth token
+      const token = await user.getIdToken()
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080'
+
+      // Upload cover image first (required)
+      let coverImageUrl = ''
+      if (formData.coverImage) {
+        try {
+          const tempCampaignId = `temp-${Date.now()}`
+          const coverImagePath = generateCampaignMediaPath(tempCampaignId, formData.coverImage.name, 'cover')
+          
+          setUploadProgress({ coverImage: 0 })
+          coverImageUrl = await uploadFile(
+            formData.coverImage,
+            coverImagePath,
+            (progress) => setUploadProgress(prev => ({ ...prev, coverImage: progress }))
+          )
+          setUploadProgress({ coverImage: 100 })
+        } catch (error: any) {
+          setErrors({ coverImage: error.message || 'Failed to upload cover image' })
+          setIsSubmitting(false)
+          return
+        }
+      }
+
+      // Upload additional images
+      const additionalImageUrls: string[] = []
+      if (formData.additionalImages.length > 0) {
+        try {
+          const tempCampaignId = `temp-${Date.now()}`
+          const imagePaths = formData.additionalImages.map((file, index) => 
+            generateCampaignMediaPath(tempCampaignId, file.name, 'image')
+          )
+          
+          setUploadProgress(prev => ({ ...prev, additionalImages: 0 }))
+          const uploadedUrls = await uploadFiles(
+            formData.additionalImages,
+            `campaigns/${tempCampaignId}/images`,
+            (index, progress) => {
+              setUploadProgress(prev => ({ 
+                ...prev, 
+                additionalImages: Math.max(prev.additionalImages || 0, progress) 
+              }))
+            }
+          )
+          additionalImageUrls.push(...uploadedUrls)
+          setUploadProgress(prev => ({ ...prev, additionalImages: 100 }))
+        } catch (error: any) {
+          console.warn('Failed to upload some additional images:', error)
+          // Continue even if additional images fail
+        }
+      }
+
+      // Upload video
+      let videoUrl = ''
+      if (formData.video) {
+        try {
+          const tempCampaignId = `temp-${Date.now()}`
+          const videoPath = generateCampaignMediaPath(tempCampaignId, formData.video.name, 'video')
+          
+          setUploadProgress(prev => ({ ...prev, video: 0 }))
+          videoUrl = await uploadFile(
+            formData.video,
+            videoPath,
+            (progress) => setUploadProgress(prev => ({ ...prev, video: progress }))
+          )
+          setUploadProgress(prev => ({ ...prev, video: 100 }))
+        } catch (error: any) {
+          console.warn('Failed to upload video:', error)
+          // Continue even if video fails
+        }
+      }
+
+      // Calculate deadline
+      const deadlineDate = formData.deadline 
+        ? new Date(formData.deadline)
+        : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // Default 30 days
+
+      // Calculate duration in days
+      const duration = Math.ceil((deadlineDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+
+      // Prepare campaign data
+      const campaignData = {
+        title: formData.title,
+        description: formData.shortDescription || formData.story.substring(0, 500),
+        story: formData.story,
+        category: formData.category,
+        goal: parseFloat(formData.goal),
+        currency: formData.currency,
+        cover_image: coverImageUrl,
+        country: formData.location.split(',')[2]?.trim() || '',
+        postcode: '',
+        who_for: formData.beneficiary,
+        duration: duration,
+        deadline: deadlineDate.toISOString(), // Backend will parse this
+        organizer_name: formData.organizerName,
+        location: formData.location,
+        // Additional fields
+        tags: formData.tags,
+        additional_images: additionalImageUrls,
+        video_url: videoUrl,
+        beneficiary_relation: formData.beneficiaryRelation,
+        urgency: formData.urgency,
+        flexible_goal: formData.flexibleGoal,
+        updates: formData.updates,
+        organizer_email: formData.organizerEmail,
+        organizer_phone: formData.organizerPhone,
+        organizer_bio: formData.organizerBio,
+      }
+
+      // Create campaign via API
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 second timeout
+
+      const response = await fetch(`${apiUrl}/api/campaign/create`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(campaignData),
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeoutId)
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: 'Failed to create campaign' }))
+        throw new Error(errorData.error || errorData.message || 'Failed to create campaign')
+      }
+
+      const result = await response.json()
+      const campaignId = result.campaign?.id || result.campaign_id
+
+      // Redirect to campaign page or dashboard
+      if (campaignId) {
+        router.push(`/campaign/${campaignId}`)
+      } else {
+        router.push('/dashboard')
+      }
+    } catch (error: any) {
+      console.error('Campaign creation error:', error)
+      setErrors({ 
+        general: error.message || 'Failed to create campaign. Please try again.' 
+      })
+    } finally {
+      setIsSubmitting(false)
+      setUploadProgress({})
+    }
   }
 
   const progress = calculateProgress()
@@ -647,52 +942,194 @@ export function StartFundraiser() {
                 {/* Cover Image */}
                 <div>
                   <Label className="text-base font-semibold">Cover Image *</Label>
-                  <div
-                    className={`mt-2 border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
-                      errors.coverImage
-                        ? "border-red-500 bg-red-50"
-                        : "border-gray-300 hover:border-emerald-400 bg-gray-50"
-                    }`}
-                  >
-                    <Camera className="mx-auto h-12 w-12 text-gray-400 mb-4" />
-                    <div className="space-y-2">
-                      <Button variant="outline" className="mb-2">
-                        <Upload className="w-4 h-4 mr-2" />
-                        Choose Cover Image
-                      </Button>
-                      <p className="text-sm text-gray-600">Upload a compelling photo that represents your campaign</p>
-                      <p className="text-xs text-gray-500">Recommended: 1200x630px, JPG or PNG, max 5MB</p>
+                  <input
+                    ref={coverImageInputRef}
+                    type="file"
+                    accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
+                    onChange={handleCoverImageChange}
+                    className="hidden"
+                  />
+                  {coverImagePreview ? (
+                    <div className="mt-2 space-y-2">
+                      <div className="relative w-full h-64 rounded-lg overflow-hidden border-2 border-gray-200">
+                        <Image
+                          src={coverImagePreview}
+                          alt="Cover preview"
+                          fill
+                          className="object-cover"
+                        />
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="absolute top-2 right-2"
+                          onClick={() => {
+                            setFormData({ ...formData, coverImage: null })
+                            setCoverImagePreview(null)
+                            if (coverImageInputRef.current) {
+                              coverImageInputRef.current.value = ''
+                            }
+                          }}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      </div>
+                      {uploadProgress.coverImage !== undefined && uploadProgress.coverImage < 100 && (
+                        <div className="space-y-1">
+                          <Progress value={uploadProgress.coverImage} />
+                          <p className="text-xs text-gray-500">Uploading: {Math.round(uploadProgress.coverImage)}%</p>
+                        </div>
+                      )}
                     </div>
-                  </div>
+                  ) : (
+                    <div
+                      className={`mt-2 border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer ${
+                        errors.coverImage
+                          ? "border-red-500 bg-red-50"
+                          : "border-gray-300 hover:border-emerald-400 bg-gray-50"
+                      }`}
+                      onClick={() => coverImageInputRef.current?.click()}
+                    >
+                      <Camera className="mx-auto h-12 w-12 text-gray-400 mb-4" />
+                      <div className="space-y-2">
+                        <Button 
+                          variant="outline" 
+                          className="mb-2"
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            coverImageInputRef.current?.click()
+                          }}
+                        >
+                          <Upload className="w-4 h-4 mr-2" />
+                          Choose Cover Image
+                        </Button>
+                        <p className="text-sm text-gray-600">Upload a compelling photo that represents your campaign</p>
+                        <p className="text-xs text-gray-500">Recommended: 1200x630px, JPG or PNG, max 10MB</p>
+                      </div>
+                    </div>
+                  )}
                   {errors.coverImage && <p className="text-red-500 text-sm mt-1">{errors.coverImage}</p>}
                 </div>
 
                 {/* Additional Images */}
                 <div>
                   <Label className="text-base font-semibold">Additional Images (Optional)</Label>
-                  <div className="mt-2 border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-emerald-400 transition-colors">
+                  <input
+                    ref={additionalImagesInputRef}
+                    type="file"
+                    accept="image/jpeg,image/jpg,image/png,image/webp,image/gif"
+                    multiple
+                    onChange={handleAdditionalImagesChange}
+                    className="hidden"
+                  />
+                  {additionalImagesPreview.length > 0 && (
+                    <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-4">
+                      {additionalImagesPreview.map((preview, index) => (
+                        <div key={index} className="relative aspect-video rounded-lg overflow-hidden border-2 border-gray-200">
+                          <Image
+                            src={preview}
+                            alt={`Additional image ${index + 1}`}
+                            fill
+                            className="object-cover"
+                          />
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            className="absolute top-1 right-1 h-6 w-6 p-0"
+                            onClick={() => removeAdditionalImage(index)}
+                          >
+                            <X className="w-3 h-3" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div 
+                    className="mt-2 border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-emerald-400 transition-colors cursor-pointer"
+                    onClick={() => additionalImagesInputRef.current?.click()}
+                  >
                     <Upload className="mx-auto h-8 w-8 text-gray-400 mb-2" />
-                    <Button variant="outline" size="sm">
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        additionalImagesInputRef.current?.click()
+                      }}
+                    >
                       Add More Images
                     </Button>
                     <p className="text-xs text-gray-500 mt-2">
-                      Add up to 10 additional images to tell your story better
+                      Add up to 10 additional images to tell your story better ({formData.additionalImages.length}/10)
                     </p>
                   </div>
+                  {errors.additionalImages && <p className="text-red-500 text-sm mt-1">{errors.additionalImages}</p>}
+                  {uploadProgress.additionalImages !== undefined && uploadProgress.additionalImages < 100 && (
+                    <div className="mt-2 space-y-1">
+                      <Progress value={uploadProgress.additionalImages} />
+                      <p className="text-xs text-gray-500">Uploading: {Math.round(uploadProgress.additionalImages)}%</p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Video */}
                 <div>
                   <Label className="text-base font-semibold">Campaign Video (Optional)</Label>
-                  <div className="mt-2 border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-emerald-400 transition-colors">
-                    <FileText className="mx-auto h-8 w-8 text-gray-400 mb-2" />
-                    <Button variant="outline" size="sm">
-                      Upload Video
-                    </Button>
-                    <p className="text-xs text-gray-500 mt-2">
-                      MP4, MOV, or AVI. Max 100MB. Videos can increase donations by up to 30%
-                    </p>
-                  </div>
+                  <input
+                    ref={videoInputRef}
+                    type="file"
+                    accept="video/mp4,video/mov,video/avi,video/webm"
+                    onChange={handleVideoChange}
+                    className="hidden"
+                  />
+                  {videoPreview ? (
+                    <div className="mt-2 space-y-2">
+                      <div className="relative w-full aspect-video rounded-lg overflow-hidden border-2 border-gray-200 bg-black">
+                        <video
+                          src={videoPreview}
+                          controls
+                          className="w-full h-full object-contain"
+                        />
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="absolute top-2 right-2"
+                          onClick={removeVideo}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      </div>
+                      {uploadProgress.video !== undefined && uploadProgress.video < 100 && (
+                        <div className="space-y-1">
+                          <Progress value={uploadProgress.video} />
+                          <p className="text-xs text-gray-500">Uploading: {Math.round(uploadProgress.video)}%</p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div 
+                      className="mt-2 border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-emerald-400 transition-colors cursor-pointer"
+                      onClick={() => videoInputRef.current?.click()}
+                    >
+                      <FileText className="mx-auto h-8 w-8 text-gray-400 mb-2" />
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          videoInputRef.current?.click()
+                        }}
+                      >
+                        Upload Video
+                      </Button>
+                      <p className="text-xs text-gray-500 mt-2">
+                        MP4, MOV, AVI, or WebM. Max 100MB. Videos can increase donations by up to 30%
+                      </p>
+                    </div>
+                  )}
+                  {errors.video && <p className="text-red-500 text-sm mt-1">{errors.video}</p>}
                 </div>
 
                 <Separator />
@@ -1041,22 +1478,43 @@ export function StartFundraiser() {
               </div>
             )}
 
+            {/* Error Alert */}
+            {errors.general && (
+              <Alert variant="destructive" className="border-red-200 bg-red-50">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>{errors.general}</AlertDescription>
+              </Alert>
+            )}
+
             {/* Navigation Buttons */}
             <div className="flex justify-between pt-8 border-t">
-              <Button variant="outline" onClick={prevStep} disabled={currentStep === 1} className="px-6">
+              <Button variant="outline" onClick={prevStep} disabled={currentStep === 1 || isSubmitting} className="px-6">
                 <ArrowLeft className="w-4 h-4 mr-2" />
                 Previous
               </Button>
 
               {currentStep < steps.length ? (
-                <Button onClick={nextStep} className="bg-emerald-600 hover:bg-emerald-700 px-6">
+                <Button onClick={nextStep} disabled={isSubmitting} className="bg-emerald-600 hover:bg-emerald-700 px-6">
                   Next Step
                   <ArrowRight className="w-4 h-4 ml-2" />
                 </Button>
               ) : (
-                <Button className="bg-emerald-600 hover:bg-emerald-700 px-8">
-                  <Heart className="w-4 h-4 mr-2" />
-                  Launch Campaign
+                <Button 
+                  onClick={handleLaunchCampaign} 
+                  disabled={isSubmitting}
+                  className="bg-emerald-600 hover:bg-emerald-700 px-8"
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Creating Campaign...
+                    </>
+                  ) : (
+                    <>
+                      <Heart className="w-4 h-4 mr-2" />
+                      Launch Campaign
+                    </>
+                  )}
                 </Button>
               )}
             </div>

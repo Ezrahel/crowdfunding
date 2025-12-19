@@ -8,7 +8,9 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Checkbox } from "@/components/ui/checkbox"
-import { Heart, CreditCard, Lock } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Heart, CreditCard, Lock, AlertCircle } from "lucide-react"
+import { validateEmail } from "@/lib/api-client"
 
 interface DonationModalProps {
   isOpen: boolean
@@ -30,6 +32,11 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
   const [message, setMessage] = useState("")
   const [isAnonymous, setIsAnonymous] = useState(false)
   const [coverFees, setCoverFees] = useState(true)
+  const [errors, setErrors] = useState<{
+    amount?: string
+    donorName?: string
+    donorEmail?: string
+  }>({})
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat("en-US", {
@@ -45,10 +52,76 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
     setAmount(tierAmount)
   }
 
-  const calculateTotal = () => {
+  const calculateFees = () => {
     const donationAmount = Number.parseFloat(amount) || 0
-    const feeAmount = coverFees ? donationAmount * 0.029 + 0.3 : 0
-    return donationAmount + feeAmount
+    if (donationAmount <= 0) return { platformFee: 0, processingFee: 0, total: 0 }
+    
+    // 5% platform fee (always deducted from donation)
+    const platformFee = donationAmount * 0.05
+    
+    // 2.9% + $0.30 processing fee (only if user covers fees)
+    const processingFee = coverFees ? donationAmount * 0.029 + 0.3 : 0
+    
+    return {
+      platformFee,
+      processingFee,
+      total: donationAmount + processingFee,
+      netToCampaign: donationAmount - platformFee,
+    }
+  }
+
+  const calculateTotal = () => {
+    return calculateFees().total
+  }
+
+  const validateForm = (): boolean => {
+    const newErrors: typeof errors = {}
+
+    // Validate amount
+    const donationAmount = Number.parseFloat(amount) || 0
+    if (!amount || donationAmount <= 0) {
+      newErrors.amount = "Please enter a valid donation amount"
+    } else if (donationAmount < 1) {
+      newErrors.amount = "Minimum donation is $1"
+    } else if (donationAmount > 100000) {
+      newErrors.amount = "Maximum donation is $100,000"
+    }
+
+    // Validate donor name (if not anonymous)
+    if (!isAnonymous) {
+      if (!donorName.trim()) {
+        newErrors.donorName = "Name is required"
+      } else if (donorName.trim().length < 2) {
+        newErrors.donorName = "Name must be at least 2 characters"
+      }
+    }
+
+    // Validate email (if not anonymous)
+    if (!isAnonymous) {
+      if (!donorEmail.trim()) {
+        newErrors.donorEmail = "Email is required"
+      } else if (!validateEmail(donorEmail)) {
+        newErrors.donorEmail = "Please enter a valid email address"
+      }
+    }
+
+    setErrors(newErrors)
+    return Object.keys(newErrors).length === 0
+  }
+
+  const handleSubmit = () => {
+    if (!validateForm()) {
+      return
+    }
+    // TODO: Implement actual donation submission
+    console.log("Donation submitted:", {
+      amount,
+      donorName: isAnonymous ? "Anonymous" : donorName,
+      donorEmail: isAnonymous ? "" : donorEmail,
+      message,
+      coverFees,
+    })
+    onClose()
   }
 
   return (
@@ -59,6 +132,16 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
         </DialogHeader>
 
         <div className="space-y-6">
+          {/* Error Messages */}
+          {(errors.amount || errors.donorName || errors.donorEmail) && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>
+                {errors.amount || errors.donorName || errors.donorEmail}
+              </AlertDescription>
+            </Alert>
+          )}
+
           {/* Donation Amount */}
           <div>
             <Label className="text-lg font-semibold mb-4 block">Choose your donation amount</Label>
@@ -104,23 +187,35 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label htmlFor="donor-name">Full Name</Label>
+                <Label htmlFor="donor-name">Full Name {!isAnonymous && <span className="text-red-500">*</span>}</Label>
                 <Input
                   id="donor-name"
                   value={donorName}
-                  onChange={(e) => setDonorName(e.target.value)}
+                  onChange={(e) => {
+                    setDonorName(e.target.value)
+                    if (errors.donorName) setErrors(prev => ({ ...prev, donorName: undefined }))
+                  }}
                   placeholder="Enter your name"
+                  className={errors.donorName ? "border-red-500" : ""}
+                  disabled={isAnonymous}
                 />
+                {errors.donorName && <p className="text-sm text-red-500 mt-1">{errors.donorName}</p>}
               </div>
               <div>
-                <Label htmlFor="donor-email">Email Address</Label>
+                <Label htmlFor="donor-email">Email Address {!isAnonymous && <span className="text-red-500">*</span>}</Label>
                 <Input
                   id="donor-email"
                   type="email"
                   value={donorEmail}
-                  onChange={(e) => setDonorEmail(e.target.value)}
+                  onChange={(e) => {
+                    setDonorEmail(e.target.value)
+                    if (errors.donorEmail) setErrors(prev => ({ ...prev, donorEmail: undefined }))
+                  }}
                   placeholder="Enter your email"
+                  className={errors.donorEmail ? "border-red-500" : ""}
+                  disabled={isAnonymous}
                 />
+                {errors.donorEmail && <p className="text-sm text-red-500 mt-1">{errors.donorEmail}</p>}
               </div>
             </div>
 
@@ -155,20 +250,27 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
           </div>
 
           {/* Payment Summary */}
-          <div className="bg-emerald-50 p-4 rounded-lg">
-            <div className="flex justify-between items-center mb-2">
-              <span>Donation:</span>
-              <span>{formatCurrency(Number.parseFloat(amount) || 0)}</span>
+          <div className="bg-emerald-50 p-4 rounded-lg space-y-2">
+            <div className="flex justify-between items-center">
+              <span>Donation Amount:</span>
+              <span className="font-semibold">{formatCurrency(Number.parseFloat(amount) || 0)}</span>
+            </div>
+            <div className="flex justify-between items-center text-sm text-gray-600">
+              <span>Platform fee (5%):</span>
+              <span>{formatCurrency(calculateFees().platformFee)}</span>
+            </div>
+            <div className="text-xs text-gray-500 italic">
+              Net to campaign: {formatCurrency(calculateFees().netToCampaign)}
             </div>
             {coverFees && (
-              <div className="flex justify-between items-center mb-2 text-sm">
-                <span>Transaction fee:</span>
-                <span>{formatCurrency((Number.parseFloat(amount) || 0) * 0.029 + 0.3)}</span>
+              <div className="flex justify-between items-center text-sm">
+                <span>Processing fee (2.9% + $0.30):</span>
+                <span>{formatCurrency(calculateFees().processingFee)}</span>
               </div>
             )}
-            <div className="flex justify-between items-center font-semibold text-lg border-t pt-2">
-              <span>Total:</span>
-              <span>{formatCurrency(calculateTotal())}</span>
+            <div className="flex justify-between items-center font-semibold text-lg border-t pt-2 mt-2">
+              <span>Total to pay:</span>
+              <span className="text-emerald-700">{formatCurrency(calculateTotal())}</span>
             </div>
           </div>
 
@@ -203,6 +305,7 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
             <Button
               className="flex-1 bg-emerald-600 hover:bg-emerald-700"
               disabled={!amount || Number.parseFloat(amount) <= 0}
+              onClick={handleSubmit}
             >
               <Heart className="w-4 h-4 mr-2" />
               Donate {formatCurrency(calculateTotal())}
