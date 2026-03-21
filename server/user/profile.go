@@ -1,26 +1,26 @@
 package user
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"time"
 
+	"server/database"
 	"server/models"
 	"server/utils"
 
-	"cloud.google.com/go/firestore"
+	"github.com/lib/pq"
 )
 
-var profileFirestoreClient *firestore.Client
+var profileDB *sql.DB
 
-// InitProfileHandlers initializes profile handlers with Firestore client
-func InitProfileHandlers(client *firestore.Client) {
-	profileFirestoreClient = client
+func InitProfileHandlers(db *sql.DB) {
+	profileDB = db
 }
 
-// GetUserUID extracts user ID from request context
 func GetUserUID(r *http.Request) (string, error) {
 	uidVal := r.Context().Value("auth_uid")
 	userID, ok := uidVal.(string)
@@ -30,42 +30,39 @@ func GetUserUID(r *http.Request) (string, error) {
 	return userID, nil
 }
 
-// GetProfile retrieves user profile
 func GetProfile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
-
-	if profileFirestoreClient == nil {
-		http.Error(w, "Firestore client not initialized", http.StatusInternalServerError)
-		return
+	if profileDB == nil {
+		var err error
+		profileDB, err = database.GetDB()
+		if err != nil {
+			utils.WriteInternalError(w, err)
+			return
+		}
 	}
 
 	userID, err := GetUserUID(r)
 	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		utils.WriteUnauthorized(w, "Authentication required")
 		return
 	}
 
-	// Try to get profile from Firestore
-	doc, err := profileFirestoreClient.Collection("users").Doc(userID).Get(r.Context())
-	if err != nil {
-		// Profile doesn't exist yet, return empty profile
-		profile := models.UserProfile{
-			UID:       userID,
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(profile)
-		return
-	}
+	query := `
+SELECT uid, COALESCE(email, ''), display_name, first_name, last_name, photo_url, bio, location, phone, website,
+       email_verified, auth_providers, last_login_at, last_login_provider, created_at, updated_at
+FROM users
+WHERE uid = $1`
 
-	var profile models.UserProfile
-	if err := doc.DataTo(&profile); err != nil {
-		log.Printf("Error parsing profile: %v", err)
+	profile, err := database.ScanUserProfile(func(dest ...any) error {
+		return profileDB.QueryRowContext(r.Context(), query, userID).Scan(dest...)
+	})
+	if err == sql.ErrNoRows {
+		profile = models.UserProfile{UID: userID, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	} else if err != nil {
+		log.Printf("Error fetching profile: %v", err)
 		utils.WriteInternalError(w, err)
 		return
 	}
@@ -75,21 +72,23 @@ func GetProfile(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(profile)
 }
 
-// UpdateProfile updates user profile
 func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
-
-	if profileFirestoreClient == nil {
-		http.Error(w, "Firestore client not initialized", http.StatusInternalServerError)
-		return
+	if profileDB == nil {
+		var err error
+		profileDB, err = database.GetDB()
+		if err != nil {
+			utils.WriteInternalError(w, err)
+			return
+		}
 	}
 
 	userID, err := GetUserUID(r)
 	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		utils.WriteUnauthorized(w, "Authentication required")
 		return
 	}
 
@@ -99,7 +98,6 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize and validate inputs
 	updates.DisplayName = utils.SanitizeString(updates.DisplayName, 200)
 	updates.FirstName = utils.SanitizeString(updates.FirstName, 100)
 	updates.LastName = utils.SanitizeString(updates.LastName, 100)
@@ -107,14 +105,13 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	updates.Location = utils.SanitizeString(updates.Location, 200)
 	updates.Phone = utils.SanitizeString(updates.Phone, 20)
 	updates.Website = utils.SanitizeString(updates.Website, 500)
+	updates.PhotoURL = utils.SanitizeString(updates.PhotoURL, 500)
+	updates.Email = utils.SanitizeString(updates.Email, 320)
 
-	// Validate email if provided
 	if updates.Email != "" && !utils.ValidateEmail(updates.Email) {
 		utils.WriteValidationError(w, "Invalid email address")
 		return
 	}
-
-	// Validate string lengths
 	if updates.DisplayName != "" {
 		if err := utils.ValidateStringLength(updates.DisplayName, 1, 200); err != nil {
 			utils.WriteValidationError(w, "Display name "+err.Error())
@@ -128,49 +125,107 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Ensure UID matches
-	updates.UID = userID
-	updates.UpdatedAt = time.Now()
+	selectQuery := `
+SELECT uid, COALESCE(email, ''), display_name, first_name, last_name, photo_url, bio, location, phone, website,
+       email_verified, auth_providers, last_login_at, last_login_provider, created_at, updated_at
+FROM users
+WHERE uid = $1`
 
-	// Get existing profile to preserve created_at
-	doc, err := profileFirestoreClient.Collection("users").Doc(userID).Get(r.Context())
-	if err != nil {
-		// Profile doesn't exist, set created_at
-		updates.CreatedAt = time.Now()
-	} else {
-		var existing models.UserProfile
-		if err := doc.DataTo(&existing); err == nil {
-			updates.CreatedAt = existing.CreatedAt
-		} else {
-			updates.CreatedAt = time.Now()
-		}
+	existing, err := database.ScanUserProfile(func(dest ...any) error {
+		return profileDB.QueryRowContext(r.Context(), selectQuery, userID).Scan(dest...)
+	})
+	if err != nil && err != sql.ErrNoRows {
+		log.Printf("Error loading profile for update: %v", err)
+		utils.WriteInternalError(w, err)
+		return
 	}
 
-	// Get existing profile to merge with updates
-	doc, err = profileFirestoreClient.Collection("users").Doc(userID).Get(r.Context())
-	var existingProfile models.UserProfile
-	if err == nil {
-		// Profile exists, merge updates
-		if err := doc.DataTo(&existingProfile); err == nil {
-			// Preserve fields that weren't updated
-			if updates.Email == "" {
-				updates.Email = existingProfile.Email
-			}
-			if updates.DisplayName == "" {
-				updates.DisplayName = existingProfile.DisplayName
-			}
-			if updates.PhotoURL == "" {
-				updates.PhotoURL = existingProfile.PhotoURL
-			}
-			if len(updates.AuthProviders) == 0 {
-				updates.AuthProviders = existingProfile.AuthProviders
-			}
-			updates.CreatedAt = existingProfile.CreatedAt
-		}
+	now := time.Now()
+	profile := existing
+	if err == sql.ErrNoRows {
+		profile = models.UserProfile{UID: userID, CreatedAt: now, UpdatedAt: now}
 	}
 
-	// Update in Firestore
-	_, err = profileFirestoreClient.Collection("users").Doc(userID).Set(r.Context(), updates)
+	profile.UID = userID
+	if updates.Email != "" {
+		profile.Email = updates.Email
+	}
+	if updates.DisplayName != "" {
+		profile.DisplayName = updates.DisplayName
+	}
+	if updates.FirstName != "" {
+		profile.FirstName = updates.FirstName
+	}
+	if updates.LastName != "" {
+		profile.LastName = updates.LastName
+	}
+	if updates.PhotoURL != "" {
+		profile.PhotoURL = updates.PhotoURL
+	}
+	if updates.Bio != "" || existing.Bio == "" {
+		profile.Bio = updates.Bio
+	}
+	if updates.Location != "" || existing.Location == "" {
+		profile.Location = updates.Location
+	}
+	if updates.Phone != "" || existing.Phone == "" {
+		profile.Phone = updates.Phone
+	}
+	if updates.Website != "" || existing.Website == "" {
+		profile.Website = updates.Website
+	}
+	if len(profile.AuthProviders) == 0 {
+		profile.AuthProviders = []string{"email"}
+	}
+	if profile.LastLoginAt.IsZero() {
+		profile.LastLoginAt = now
+	}
+	if profile.LastLoginProvider == "" && len(profile.AuthProviders) > 0 {
+		profile.LastLoginProvider = profile.AuthProviders[len(profile.AuthProviders)-1]
+	}
+	profile.UpdatedAt = now
+
+	upsert := `
+INSERT INTO users (
+    uid, email, display_name, first_name, last_name, photo_url, bio, location, phone, website,
+    email_verified, auth_providers, last_login_at, last_login_provider, created_at, updated_at
+) VALUES (
+    $1, NULLIF($2, ''), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+)
+ON CONFLICT (uid) DO UPDATE SET
+    email = EXCLUDED.email,
+    display_name = EXCLUDED.display_name,
+    first_name = EXCLUDED.first_name,
+    last_name = EXCLUDED.last_name,
+    photo_url = EXCLUDED.photo_url,
+    bio = EXCLUDED.bio,
+    location = EXCLUDED.location,
+    phone = EXCLUDED.phone,
+    website = EXCLUDED.website,
+    email_verified = EXCLUDED.email_verified,
+    auth_providers = EXCLUDED.auth_providers,
+    last_login_at = EXCLUDED.last_login_at,
+    last_login_provider = EXCLUDED.last_login_provider,
+    updated_at = EXCLUDED.updated_at`
+
+	_, err = profileDB.ExecContext(r.Context(), upsert,
+		profile.UID,
+		profile.Email,
+		profile.DisplayName,
+		profile.FirstName,
+		profile.LastName,
+		profile.PhotoURL,
+		profile.Bio,
+		profile.Location,
+		profile.Phone,
+		profile.Website,
+		profile.EmailVerified,
+		pq.Array(profile.AuthProviders),
+		profile.LastLoginAt,
+		profile.LastLoginProvider,
+		profile.CreatedAt,
+		profile.UpdatedAt,
+	)
 	if err != nil {
 		log.Printf("Error updating profile: %v", err)
 		utils.WriteInternalError(w, err)
@@ -181,6 +236,6 @@ func UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message": "Profile updated successfully",
-		"profile": updates,
+		"profile": profile,
 	})
 }

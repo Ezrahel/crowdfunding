@@ -1,6 +1,7 @@
 package onboarding
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -8,25 +9,28 @@ import (
 	"strings"
 	"time"
 
+	"server/database"
+	"server/jobs"
 	"server/models"
 	"server/paystack"
 	"server/utils"
-
-	"cloud.google.com/go/firestore"
 )
 
 var (
-	onboardingFirestoreClient *firestore.Client
-	paystackClient            *paystack.Client
+	onboardingDB     *sql.DB
+	paystackClient   *paystack.Client
+	onboardingSelect = `
+SELECT id, user_id, status, national_id_number, bvn, tin, virtual_account_id,
+       virtual_account_number, virtual_account_name, virtual_account_bank,
+       paystack_customer_code, created_at, updated_at, completed_at
+FROM onboarding`
 )
 
-// InitOnboarding initializes the onboarding handlers with Firestore client
-func InitOnboarding(client *firestore.Client) {
-	onboardingFirestoreClient = client
+func InitOnboarding(db *sql.DB) {
+	onboardingDB = db
 	paystackClient = paystack.NewClient()
 }
 
-// GetUserUID extracts user ID from request context
 func GetUserUID(r *http.Request) (string, error) {
 	uidVal := r.Context().Value("auth_uid")
 	uid, ok := uidVal.(string)
@@ -36,16 +40,18 @@ func GetUserUID(r *http.Request) (string, error) {
 	return uid, nil
 }
 
-// GetOnboardingStatus retrieves the onboarding status for the current user
 func GetOnboardingStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
-
-	if onboardingFirestoreClient == nil {
-		utils.WriteInternalError(w, fmt.Errorf("firestore client not initialized"))
-		return
+	if onboardingDB == nil {
+		var err error
+		onboardingDB, err = database.GetDB()
+		if err != nil {
+			utils.WriteInternalError(w, err)
+			return
+		}
 	}
 
 	userID, err := GetUserUID(r)
@@ -54,32 +60,24 @@ func GetOnboardingStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get onboarding document
-	doc, err := onboardingFirestoreClient.Collection("onboarding").Doc(userID).Get(r.Context())
+	onboarding, err := database.ScanOnboarding(func(dest ...any) error {
+		return onboardingDB.QueryRowContext(r.Context(), onboardingSelect+" WHERE user_id = $1", userID).Scan(dest...)
+	})
+	if err == sql.ErrNoRows {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":              models.OnboardingStatusPending,
+			"has_virtual_account": false,
+		})
+		return
+	}
 	if err != nil {
-		// If document doesn't exist, return pending status
-		if strings.Contains(err.Error(), "NotFound") {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"status":              models.OnboardingStatusPending,
-				"has_virtual_account": false,
-			})
-			return
-		}
 		log.Printf("Error fetching onboarding: %v", err)
 		utils.WriteInternalError(w, err)
 		return
 	}
 
-	var onboarding models.Onboarding
-	if err := doc.DataTo(&onboarding); err != nil {
-		log.Printf("Error parsing onboarding: %v", err)
-		utils.WriteInternalError(w, err)
-		return
-	}
-
-	// Mask sensitive information
 	response := map[string]interface{}{
 		"status":              onboarding.Status,
 		"has_virtual_account": onboarding.VirtualAccountID != "",
@@ -92,8 +90,6 @@ func GetOnboardingStatus(w http.ResponseWriter, r *http.Request) {
 		"updated_at":   onboarding.UpdatedAt,
 		"completed_at": onboarding.CompletedAt,
 	}
-
-	// Only show sensitive info if completed
 	if onboarding.Status == models.OnboardingStatusCompleted {
 		response["national_id_number"] = maskString(onboarding.NationalIDNumber)
 		response["bvn"] = maskString(onboarding.BVN)
@@ -105,16 +101,18 @@ func GetOnboardingStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// SubmitOnboarding handles onboarding submission and creates virtual account
 func SubmitOnboarding(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
-
-	if onboardingFirestoreClient == nil {
-		utils.WriteInternalError(w, fmt.Errorf("firestore client not initialized"))
-		return
+	if onboardingDB == nil {
+		var err error
+		onboardingDB, err = database.GetDB()
+		if err != nil {
+			utils.WriteInternalError(w, err)
+			return
+		}
 	}
 
 	userID, err := GetUserUID(r)
@@ -129,93 +127,57 @@ func SubmitOnboarding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate and sanitize inputs
 	req.NationalIDNumber = strings.TrimSpace(req.NationalIDNumber)
 	req.BVN = strings.TrimSpace(req.BVN)
 	req.TIN = strings.TrimSpace(req.TIN)
-
-	// Validate NIN (Nigerian National Identity Number - 11 digits)
-	if req.NationalIDNumber == "" {
-		utils.WriteValidationError(w, "National ID Number is required")
-		return
-	}
-	if len(req.NationalIDNumber) != 11 {
+	if req.NationalIDNumber == "" || len(req.NationalIDNumber) != 11 || !isNumeric(req.NationalIDNumber) {
 		utils.WriteValidationError(w, "National ID Number must be 11 digits")
 		return
 	}
-	if !isNumeric(req.NationalIDNumber) {
-		utils.WriteValidationError(w, "National ID Number must contain only digits")
-		return
-	}
-
-	// Validate BVN (Bank Verification Number - 11 digits)
-	if req.BVN == "" {
-		utils.WriteValidationError(w, "BVN is required")
-		return
-	}
-	if len(req.BVN) != 11 {
+	if req.BVN == "" || len(req.BVN) != 11 || !isNumeric(req.BVN) {
 		utils.WriteValidationError(w, "BVN must be 11 digits")
 		return
 	}
-	if !isNumeric(req.BVN) {
-		utils.WriteValidationError(w, "BVN must contain only digits")
-		return
-	}
-
-	// Validate TIN (Tax Identification Number - 9-12 digits)
-	if req.TIN == "" {
-		utils.WriteValidationError(w, "TIN is required")
-		return
-	}
-	if len(req.TIN) < 9 || len(req.TIN) > 12 {
+	if req.TIN == "" || len(req.TIN) < 9 || len(req.TIN) > 12 || !isNumeric(req.TIN) {
 		utils.WriteValidationError(w, "TIN must be between 9 and 12 digits")
 		return
 	}
-	if !isNumeric(req.TIN) {
-		utils.WriteValidationError(w, "TIN must contain only digits")
-		return
-	}
 
-	// Get user profile to get email and name
-	userDoc, err := onboardingFirestoreClient.Collection("users").Doc(userID).Get(r.Context())
+	profile, err := database.ScanUserProfile(func(dest ...any) error {
+		return onboardingDB.QueryRowContext(r.Context(), `
+SELECT uid, COALESCE(email, ''), display_name, first_name, last_name, photo_url, bio, location, phone, website,
+       email_verified, auth_providers, last_login_at, last_login_provider, created_at, updated_at
+FROM users
+WHERE uid = $1`, userID).Scan(dest...)
+	})
 	if err != nil {
 		log.Printf("Error fetching user profile: %v", err)
 		utils.WriteInternalError(w, fmt.Errorf("user profile not found"))
 		return
 	}
-
-	var userProfile models.UserProfile
-	if err := userDoc.DataTo(&userProfile); err != nil {
-		log.Printf("Error parsing user profile: %v", err)
-		utils.WriteInternalError(w, err)
-		return
-	}
-
-	if userProfile.Email == "" {
+	if profile.Email == "" {
 		utils.WriteValidationError(w, "User email is required")
 		return
 	}
 
-	// Check if onboarding already exists and is completed
-	existingDoc, err := onboardingFirestoreClient.Collection("onboarding").Doc(userID).Get(r.Context())
-	if err == nil {
-		var existing models.Onboarding
-		if err := existingDoc.DataTo(&existing); err == nil {
-			if existing.Status == models.OnboardingStatusCompleted {
-				utils.WriteBadRequest(w, "Onboarding already completed")
-				return
-			}
-		}
+	existing, err := database.ScanOnboarding(func(dest ...any) error {
+		return onboardingDB.QueryRowContext(r.Context(), onboardingSelect+" WHERE user_id = $1", userID).Scan(dest...)
+	})
+	if err == nil && existing.Status == models.OnboardingStatusCompleted {
+		utils.WriteBadRequest(w, "Onboarding already completed")
+		return
+	}
+	if err != nil && err != sql.ErrNoRows {
+		utils.WriteInternalError(w, err)
+		return
 	}
 
-	// Create virtual account with Paystack
 	paystackReq := paystack.VirtualAccountRequest{
-		Email:     userProfile.Email,
-		FirstName: userProfile.FirstName,
-		LastName:  userProfile.LastName,
-		Phone:     userProfile.Phone,
+		Email:     profile.Email,
+		FirstName: profile.FirstName,
+		LastName:  profile.LastName,
+		Phone:     profile.Phone,
 	}
-
 	paystackResp, err := paystackClient.CreateVirtualAccount(paystackReq)
 	if err != nil {
 		log.Printf("Error creating Paystack virtual account: %v", err)
@@ -223,7 +185,6 @@ func SubmitOnboarding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create onboarding document
 	now := time.Now()
 	onboarding := models.Onboarding{
 		ID:                   userID,
@@ -241,23 +202,74 @@ func SubmitOnboarding(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:            now,
 		CompletedAt:          &now,
 	}
+	if err == nil {
+		onboarding.CreatedAt = existing.CreatedAt
+	}
 
-	// Save to Firestore
-	_, err = onboardingFirestoreClient.Collection("onboarding").Doc(userID).Set(r.Context(), onboarding)
-	if err != nil {
+	upsert := `
+INSERT INTO onboarding (
+    id, user_id, status, national_id_number, bvn, tin, virtual_account_id,
+    virtual_account_number, virtual_account_name, virtual_account_bank, paystack_customer_code,
+    created_at, updated_at, completed_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7,
+    $8, $9, $10, $11,
+    $12, $13, $14
+)
+ON CONFLICT (id) DO UPDATE SET
+    user_id = EXCLUDED.user_id,
+    status = EXCLUDED.status,
+    national_id_number = EXCLUDED.national_id_number,
+    bvn = EXCLUDED.bvn,
+    tin = EXCLUDED.tin,
+    virtual_account_id = EXCLUDED.virtual_account_id,
+    virtual_account_number = EXCLUDED.virtual_account_number,
+    virtual_account_name = EXCLUDED.virtual_account_name,
+    virtual_account_bank = EXCLUDED.virtual_account_bank,
+    paystack_customer_code = EXCLUDED.paystack_customer_code,
+    updated_at = EXCLUDED.updated_at,
+    completed_at = EXCLUDED.completed_at`
+
+	if _, err := onboardingDB.ExecContext(r.Context(), upsert,
+		onboarding.ID,
+		onboarding.UserID,
+		onboarding.Status,
+		onboarding.NationalIDNumber,
+		onboarding.BVN,
+		onboarding.TIN,
+		onboarding.VirtualAccountID,
+		onboarding.VirtualAccountNumber,
+		onboarding.VirtualAccountName,
+		onboarding.VirtualAccountBank,
+		onboarding.PaystackCustomerCode,
+		onboarding.CreatedAt,
+		onboarding.UpdatedAt,
+		onboarding.CompletedAt,
+	); err != nil {
 		log.Printf("Error saving onboarding: %v", err)
 		utils.WriteInternalError(w, err)
 		return
 	}
 
-	// Log financial operation for audit
 	requestID := r.Header.Get("X-Request-ID")
 	if requestID == "" {
 		requestID = "unknown"
 	}
-	utils.LogFinancialOperation("ONBOARDING_COMPLETED", userID, userID, requestID, 0, "NGN")
+	if err := jobs.EnqueueFinancialAudit(r.Context(), jobs.FinancialAuditPayload{
+		Operation: "ONBOARDING_COMPLETED",
+		UserID:    userID,
+		EntityID:  userID,
+		RequestID: requestID,
+		Amount:    0,
+		Currency:  "NGN",
+		Metadata: map[string]interface{}{
+			"virtual_account_id":     onboarding.VirtualAccountID,
+			"paystack_customer_code": onboarding.PaystackCustomerCode,
+		},
+	}); err != nil {
+		log.Printf("Error queueing onboarding audit job: %v", err)
+	}
 
-	// Return response (mask sensitive data)
 	response := map[string]interface{}{
 		"message": "Onboarding completed successfully",
 		"status":  onboarding.Status,
@@ -268,22 +280,23 @@ func SubmitOnboarding(w http.ResponseWriter, r *http.Request) {
 		},
 		"completed_at": onboarding.CompletedAt,
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(response)
 }
 
-// SkipOnboarding marks onboarding as skipped
 func SkipOnboarding(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
-
-	if onboardingFirestoreClient == nil {
-		utils.WriteInternalError(w, fmt.Errorf("firestore client not initialized"))
-		return
+	if onboardingDB == nil {
+		var err error
+		onboardingDB, err = database.GetDB()
+		if err != nil {
+			utils.WriteInternalError(w, err)
+			return
+		}
 	}
 
 	userID, err := GetUserUID(r)
@@ -292,30 +305,30 @@ func SkipOnboarding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if already completed
-	existingDoc, err := onboardingFirestoreClient.Collection("onboarding").Doc(userID).Get(r.Context())
-	if err == nil {
-		var existing models.Onboarding
-		if err := existingDoc.DataTo(&existing); err == nil {
-			if existing.Status == models.OnboardingStatusCompleted {
-				utils.WriteBadRequest(w, "Cannot skip completed onboarding")
-				return
-			}
-		}
+	existing, err := database.ScanOnboarding(func(dest ...any) error {
+		return onboardingDB.QueryRowContext(r.Context(), onboardingSelect+" WHERE user_id = $1", userID).Scan(dest...)
+	})
+	if err == nil && existing.Status == models.OnboardingStatusCompleted {
+		utils.WriteBadRequest(w, "Cannot skip completed onboarding")
+		return
+	}
+	if err != nil && err != sql.ErrNoRows {
+		utils.WriteInternalError(w, err)
+		return
 	}
 
-	// Create or update onboarding with skipped status
 	now := time.Now()
-	onboarding := models.Onboarding{
-		ID:        userID,
-		UserID:    userID,
-		Status:    models.OnboardingStatusSkipped,
-		CreatedAt: now,
-		UpdatedAt: now,
+	createdAt := now
+	if err == nil {
+		createdAt = existing.CreatedAt
 	}
 
-	_, err = onboardingFirestoreClient.Collection("onboarding").Doc(userID).Set(r.Context(), onboarding)
-	if err != nil {
+	if _, err := onboardingDB.ExecContext(r.Context(), `
+INSERT INTO onboarding (id, user_id, status, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, updated_at = EXCLUDED.updated_at`,
+		userID, userID, models.OnboardingStatusSkipped, createdAt, now,
+	); err != nil {
 		log.Printf("Error saving skipped onboarding: %v", err)
 		utils.WriteInternalError(w, err)
 		return
@@ -325,11 +338,10 @@ func SkipOnboarding(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message": "Onboarding skipped",
-		"status":  onboarding.Status,
+		"status":  models.OnboardingStatusSkipped,
 	})
 }
 
-// Helper functions
 func isNumeric(s string) bool {
 	for _, char := range s {
 		if char < '0' || char > '9' {

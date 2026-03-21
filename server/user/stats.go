@@ -1,38 +1,39 @@
 package user
 
 import (
+	"database/sql"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
 
+	"server/database"
 	"server/models"
 	"server/utils"
 
-	"cloud.google.com/go/firestore"
+	"github.com/lib/pq"
 )
 
-var firestoreClient *firestore.Client
+var statsDB *sql.DB
 
-// InitStatsHandler initializes the stats handler with Firestore client
-func InitStatsHandler(client *firestore.Client) {
-	firestoreClient = client
+func InitStatsHandler(db *sql.DB) {
+	statsDB = db
 }
 
-// GetUserStatsHandler returns user statistics for the dashboard
 func GetUserStatsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
-
-	if firestoreClient == nil {
-		utils.WriteInternalError(w, fmt.Errorf("firestore client not initialized"))
-		return
+	if statsDB == nil {
+		var err error
+		statsDB, err = database.GetDB()
+		if err != nil {
+			utils.WriteInternalError(w, err)
+			return
+		}
 	}
 
-	// Get user ID from context (set by auth middleware)
 	uidVal := r.Context().Value("auth_uid")
 	userID, ok := uidVal.(string)
 	if !ok || userID == "" {
@@ -40,122 +41,67 @@ func GetUserStatsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
 	stats := models.UserStats{}
+	now := time.Now()
 
-	// Get all campaigns for this user (with limit to prevent memory issues)
-	campaignsQuery := firestoreClient.Collection("campaigns").Where("owner_id", "==", userID).Limit(1000)
-	campaignsSnapshot, err := campaignsQuery.Documents(ctx).GetAll()
+	campaignRows, err := statsDB.QueryContext(r.Context(), `
+SELECT id, owner_id, title, description, story, category, goal, raised, currency, cover_image,
+       additional_images, video_url, status, country, postcode, who_for, beneficiary_relation,
+       duration, deadline, urgency, flexible_goal, tags, updates, donors, views, shares,
+       completed, created_at, updated_at, organizer_name, organizer_email, organizer_phone,
+       organizer_bio, location
+FROM campaigns
+WHERE owner_id = $1`, userID)
 	if err != nil {
 		log.Printf("Error fetching campaigns: %v", err)
 		utils.WriteInternalError(w, err)
 		return
 	}
+	defer campaignRows.Close()
 
-	stats.TotalCampaigns = len(campaignsSnapshot)
-	now := time.Now()
-
-	for _, doc := range campaignsSnapshot {
-		var campaign models.Campaign
-		if err := doc.DataTo(&campaign); err != nil {
+	campaignIDs := make([]string, 0)
+	for campaignRows.Next() {
+		campaign, err := database.ScanCampaign(campaignRows.Scan)
+		if err != nil {
 			log.Printf("Error parsing campaign: %v", err)
 			continue
 		}
-
+		campaignIDs = append(campaignIDs, campaign.ID)
+		stats.TotalCampaigns++
 		stats.TotalGoal += campaign.Goal
 		stats.TotalRaised += campaign.Raised
 		stats.TotalViews += campaign.Views
 		stats.SocialShares += campaign.Shares
-
-		// Check campaign status
 		if campaign.Completed {
 			stats.CompletedCampaigns++
 		} else if campaign.Status == "Active" && campaign.Deadline.After(now) {
 			stats.ActiveCampaigns++
 		}
 	}
+	if err := campaignRows.Err(); err != nil {
+		log.Printf("Campaign row iteration error: %v", err)
+	}
 
-	// Get all donations made by this user (with limit)
-	donationsQuery := firestoreClient.Collection("donations").
-		Where("donor_id", "==", userID).
-		Limit(10000) // Reasonable limit
-	donationsSnapshot, err := donationsQuery.Documents(ctx).GetAll()
-	if err != nil {
-		log.Printf("Error fetching donations: %v", err)
-		// Continue with partial stats
-	} else {
-		stats.TotalDonations = len(donationsSnapshot)
-		totalDonationAmount := 0.0
-		completedCount := 0
-		for _, doc := range donationsSnapshot {
-			var donation models.Donation
-			if err := doc.DataTo(&donation); err != nil {
-				continue
-			}
-			if donation.Status == "completed" {
-				totalDonationAmount += donation.Amount
-				completedCount++
-			}
-		}
-		if completedCount > 0 {
-			stats.AvgDonation = totalDonationAmount / float64(completedCount)
+	if err := statsDB.QueryRowContext(r.Context(), `
+SELECT COUNT(*), COALESCE(AVG(amount) FILTER (WHERE status = 'completed'), 0)
+FROM donations
+WHERE donor_id = $1`, userID).Scan(&stats.TotalDonations, &stats.AvgDonation); err != nil {
+		log.Printf("Error fetching donation stats: %v", err)
+	}
+
+	if len(campaignIDs) > 0 {
+		if err := statsDB.QueryRowContext(r.Context(), `
+SELECT COUNT(DISTINCT CASE WHEN donor_id <> '' THEN donor_id ELSE donor_email END)
+FROM donations
+WHERE campaign_id = ANY($1) AND status = 'completed'`, pq.Array(campaignIDs)).Scan(&stats.TotalDonors); err != nil {
+			log.Printf("Error fetching donor stats: %v", err)
 		}
 	}
 
-	// Get unique donors across all user's campaigns (optimized batch query)
-	donorsMap := make(map[string]bool)
-	campaignIDs := make([]string, 0, len(campaignsSnapshot))
-
-	for _, doc := range campaignsSnapshot {
-		var campaign models.Campaign
-		if err := doc.DataTo(&campaign); err != nil {
-			continue
-		}
-		campaignIDs = append(campaignIDs, campaign.ID)
-	}
-
-	// Batch query donations (Firestore IN supports up to 10 items per query)
-	// Split into chunks of 10 to avoid query limits
-	for i := 0; i < len(campaignIDs); i += 10 {
-		end := i + 10
-		if end > len(campaignIDs) {
-			end = len(campaignIDs)
-		}
-		chunk := campaignIDs[i:end]
-
-		// Query donations for this chunk of campaigns
-		donationsQuery := firestoreClient.Collection("donations").
-			Where("campaign_id", "in", chunk).
-			Where("status", "==", "completed")
-
-		donations, err := donationsQuery.Documents(ctx).GetAll()
-		if err != nil {
-			log.Printf("Error fetching donations for chunk: %v", err)
-			continue
-		}
-
-		for _, donationDoc := range donations {
-			var donation models.Donation
-			if err := donationDoc.DataTo(&donation); err != nil {
-				continue
-			}
-			if donation.DonorID != "" {
-				donorsMap[donation.DonorID] = true
-			}
-		}
-	}
-	stats.TotalDonors = len(donorsMap)
-
-	// Calculate conversion rate (donors / views)
 	if stats.TotalViews > 0 {
 		stats.ConversionRate = (float64(stats.TotalDonors) / float64(stats.TotalViews)) * 100
 	}
-
-	// Calculate monthly growth (simplified - compare this month to last month)
-	// This is a placeholder - in production, you'd calculate actual growth
-	// Calculate monthly growth: compare current month with previous month
-	// For now, set to 0.0 as this requires historical data tracking
-	stats.MonthlyGrowth = 0.0
+	stats.MonthlyGrowth = 0
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

@@ -3,32 +3,32 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-
-	"github.com/gin-gonic/gin"
 )
 
 func TestHelloWorldHandler(t *testing.T) {
 	s := &Server{}
 	mux := http.NewServeMux()
-	r := gin.New()
 	mux.HandleFunc("/", s.HelloWorldHandler)
-	// Create a test HTTP request
-	req, err := http.NewRequest("GET", "/", nil)
+
+	req, err := http.NewRequest(http.MethodGet, "/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Create a ResponseRecorder to record the response
+
 	rr := httptest.NewRecorder()
-	// Serve the HTTP request
-	r.ServeHTTP(rr, req)
-	// Check the status code
+	mux.ServeHTTP(rr, req)
+
 	if status := rr.Code; status != http.StatusOK {
-		t.Errorf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
+		t.Fatalf("Handler returned wrong status code: got %v want %v", status, http.StatusOK)
 	}
-	// Check the response body
-	expected := "{\"message\":\"Hello World\"}"
-	if rr.Body.String() != expected {
-		t.Errorf("Handler returned unexpected body: got %v want %v", rr.Body.String(), expected)
+
+	body := rr.Body.String()
+	if !strings.Contains(body, `"message":"Crowdfunding API Server"`) {
+		t.Fatalf("Handler returned unexpected body: %v", body)
+	}
+	if !strings.Contains(body, `"version":"1.0.0"`) {
+		t.Fatalf("Handler returned unexpected body: %v", body)
 	}
 }

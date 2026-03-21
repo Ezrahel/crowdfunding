@@ -1,7 +1,7 @@
 package donation
 
 import (
-	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,27 +9,32 @@ import (
 	"strings"
 	"time"
 
+	"server/database"
+	"server/jobs"
 	"server/models"
 	"server/utils"
 
-	"cloud.google.com/go/firestore"
-	"google.golang.org/api/iterator"
+	"github.com/google/uuid"
 )
 
 const AuthIDKey = "auth_uid"
 
-var firestoreClient *firestore.Client
+const donationSelect = `
+SELECT id, campaign_id, donor_id, donor_name, donor_email, amount, platform_fee, processing_fee,
+       net_amount, fee, tip, total_paid, is_anonymous, message, payment_method,
+       COALESCE(transaction_id, ''), status, created_at
+FROM donations`
 
-// InitDonationHandlers initializes donation handlers with Firestore client
-func InitDonationHandlers(client *firestore.Client) {
-	firestoreClient = client
+var donationDB *sql.DB
+
+func InitDonationHandlers(db *sql.DB) {
+	donationDB = db
 }
 
-// GetDonorUID extracts user ID from request context (optional for anonymous donations)
 func GetDonorUID(r *http.Request) (string, error) {
 	uidVal := r.Context().Value(AuthIDKey)
 	if uidVal == nil {
-		return "", nil // Anonymous donation allowed
+		return "", nil
 	}
 	donorID, ok := uidVal.(string)
 	if !ok {
@@ -38,16 +43,18 @@ func GetDonorUID(r *http.Request) (string, error) {
 	return donorID, nil
 }
 
-// CreateDonation creates a new donation
 func CreateDonation(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
-
-	if firestoreClient == nil {
-		http.Error(w, "Firestore client not initialized", http.StatusInternalServerError)
-		return
+	if donationDB == nil {
+		var err error
+		donationDB, err = database.GetDB()
+		if err != nil {
+			utils.WriteInternalError(w, err)
+			return
+		}
 	}
 
 	var req struct {
@@ -62,135 +69,91 @@ func CreateDonation(w http.ResponseWriter, r *http.Request) {
 		TransactionID string  `json:"transaction_id"`
 		CoverFees     bool    `json:"cover_fees"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		utils.WriteBadRequest(w, "Invalid request payload")
 		return
 	}
 
-	// Validate
-	if req.CampaignID == "" {
-		utils.WriteBadRequest(w, "Campaign ID is required")
-		return
-	}
-	if !utils.ValidateFirestoreID(req.CampaignID) {
+	if req.CampaignID == "" || !utils.ValidateFirestoreID(req.CampaignID) {
 		utils.WriteBadRequest(w, "Invalid campaign ID format")
 		return
 	}
-	if req.Amount <= 0 {
-		utils.WriteValidationError(w, "Amount must be greater than zero")
-		return
-	}
-	if req.DonorEmail == "" {
-		utils.WriteValidationError(w, "Donor email is required")
-		return
-	}
-
-	// Get donor ID (optional)
-	donorID, _ := GetDonorUID(r)
-
-	// Verify campaign exists
-	campaignDoc, err := firestoreClient.Collection("campaigns").Doc(req.CampaignID).Get(r.Context())
-	if err != nil {
-		if strings.Contains(err.Error(), "NotFound") {
-			utils.WriteNotFound(w, "Campaign not found")
-			return
-		}
-		log.Printf("Error fetching campaign: %v", err)
-		utils.WriteInternalError(w, err)
-		return
-	}
-
-	var campaign models.Campaign
-	if err := campaignDoc.DataTo(&campaign); err != nil {
-		log.Printf("Error parsing campaign: %v", err)
-		utils.WriteInternalError(w, err)
-		return
-	}
-
-	// Validate campaign status before allowing donation
-	if campaign.Status != "Active" {
-		utils.WriteBadRequest(w, "Donations can only be made to active campaigns")
-		return
-	}
-
-	// Check for duplicate transaction ID to prevent double-charging
-	if req.TransactionID != "" {
-		existingDonations, _ := firestoreClient.Collection("donations").
-			Where("transaction_id", "==", req.TransactionID).
-			Where("status", "==", "completed").
-			Limit(1).
-			Documents(r.Context()).GetAll()
-
-		if len(existingDonations) > 0 {
-			utils.WriteBadRequest(w, "Transaction ID already exists")
-			return
-		}
-	}
-
-	// Calculate fees
-	// 5% platform fee (always deducted from donation amount)
-	platformFee := req.Amount * 0.05
-
-	// 2.9% + $0.30 processing fee (only if user covers fees)
-	processingFee := 0.0
-	if req.CoverFees {
-		processingFee = req.Amount*0.029 + 0.30
-	}
-
-	// Net amount that goes to campaign (donation - platform fee)
-	netAmount := req.Amount - platformFee
-
-	// Total amount paid by donor
-	totalPaid := req.Amount + processingFee + req.Tip
-
-	// Legacy fee field for compatibility (total of all fees)
-	fee := platformFee + processingFee
-
-	// Validate amount
-	if err := utils.ValidateAmount(req.Amount, 0.01, 10000000.0); err != nil {
+	if err := utils.ValidateAmount(req.Amount, 0.01, 10000000); err != nil {
 		utils.WriteValidationError(w, "Amount: "+err.Error())
 		return
 	}
-
-	// Validate email
-	if !utils.ValidateEmail(req.DonorEmail) {
-		utils.WriteValidationError(w, "Invalid email address")
+	if req.DonorEmail == "" || !utils.ValidateEmail(req.DonorEmail) {
+		utils.WriteValidationError(w, "Invalid donor email address")
 		return
 	}
 
-	// Sanitize inputs
+	donorID, _ := GetDonorUID(r)
 	req.DonorName = utils.SanitizeString(req.DonorName, 200)
 	req.Message = utils.SanitizeString(req.Message, 1000)
 	req.PaymentMethod = utils.SanitizeString(req.PaymentMethod, 50)
 	req.TransactionID = utils.SanitizeString(req.TransactionID, 200)
 
-	// Check if this is a new donor BEFORE transaction (more efficient)
-	var isNewDonor bool
-	if !req.IsAnonymous {
-		if donorID != "" {
-			existingDonations, _ := firestoreClient.Collection("donations").
-				Where("campaign_id", "==", req.CampaignID).
-				Where("donor_id", "==", donorID).
-				Where("status", "==", "completed").
-				Limit(1).
-				Documents(r.Context()).GetAll()
-			isNewDonor = len(existingDonations) == 0
-		} else {
-			existingDonations, _ := firestoreClient.Collection("donations").
-				Where("campaign_id", "==", req.CampaignID).
-				Where("donor_email", "==", req.DonorEmail).
-				Where("status", "==", "completed").
-				Limit(1).
-				Documents(r.Context()).GetAll()
-			isNewDonor = len(existingDonations) == 0
+	campaign, err := database.ScanCampaign(func(dest ...any) error {
+		return donationDB.QueryRowContext(r.Context(), `
+SELECT id, owner_id, title, description, story, category, goal, raised, currency, cover_image,
+       additional_images, video_url, status, country, postcode, who_for, beneficiary_relation,
+       duration, deadline, urgency, flexible_goal, tags, updates, donors, views, shares,
+       completed, created_at, updated_at, organizer_name, organizer_email, organizer_phone,
+       organizer_bio, location
+FROM campaigns
+WHERE id = $1`, req.CampaignID).Scan(dest...)
+	})
+	if err == sql.ErrNoRows {
+		utils.WriteNotFound(w, "Campaign not found")
+		return
+	}
+	if err != nil {
+		log.Printf("Error fetching campaign: %v", err)
+		utils.WriteInternalError(w, err)
+		return
+	}
+	if campaign.Status != "Active" {
+		utils.WriteBadRequest(w, "Donations can only be made to active campaigns")
+		return
+	}
+
+	if req.TransactionID != "" {
+		var exists int
+		if err := donationDB.QueryRowContext(r.Context(), `
+SELECT COUNT(*) FROM donations WHERE transaction_id = $1 AND status = 'completed'`, req.TransactionID).Scan(&exists); err == nil && exists > 0 {
+			utils.WriteBadRequest(w, "Transaction ID already exists")
+			return
 		}
 	}
 
-	// Create donation document reference
-	donationRef := firestoreClient.Collection("donations").NewDoc()
+	platformFee := req.Amount * 0.05
+	processingFee := 0.0
+	if req.CoverFees {
+		processingFee = req.Amount*0.029 + 0.30
+	}
+	netAmount := req.Amount - platformFee
+	totalPaid := req.Amount + processingFee + req.Tip
+	fee := platformFee + processingFee
+
+	isNewDonor := false
+	if !req.IsAnonymous {
+		var existingCount int
+		if donorID != "" {
+			err = donationDB.QueryRowContext(r.Context(), `
+SELECT COUNT(*) FROM donations
+WHERE campaign_id = $1 AND donor_id = $2 AND status = 'completed'`, req.CampaignID, donorID).Scan(&existingCount)
+		} else {
+			err = donationDB.QueryRowContext(r.Context(), `
+SELECT COUNT(*) FROM donations
+WHERE campaign_id = $1 AND donor_email = $2 AND status = 'completed'`, req.CampaignID, req.DonorEmail).Scan(&existingCount)
+		}
+		if err == nil {
+			isNewDonor = existingCount == 0
+		}
+	}
+
 	donation := models.Donation{
-		ID:            donationRef.ID,
+		ID:            uuid.NewString(),
 		CampaignID:    req.CampaignID,
 		DonorID:       donorID,
 		DonorName:     req.DonorName,
@@ -199,65 +162,95 @@ func CreateDonation(w http.ResponseWriter, r *http.Request) {
 		PlatformFee:   platformFee,
 		ProcessingFee: processingFee,
 		NetAmount:     netAmount,
-		Fee:           fee, // Legacy field for compatibility
+		Fee:           fee,
 		Tip:           req.Tip,
 		TotalPaid:     totalPaid,
 		IsAnonymous:   req.IsAnonymous,
 		Message:       req.Message,
 		PaymentMethod: req.PaymentMethod,
 		TransactionID: req.TransactionID,
-		Status:        "completed", // In production, start as "pending" until payment confirmed
+		Status:        "completed",
 		CreatedAt:     time.Now(),
 	}
 
-	// Use transaction to ensure atomicity: create donation AND update campaign
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-
-	err = firestoreClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
-		// Create donation
-		if err := tx.Set(donationRef, donation); err != nil {
-			return fmt.Errorf("failed to create donation: %w", err)
-		}
-
-		// Update campaign
-		campaignRef := firestoreClient.Collection("campaigns").Doc(req.CampaignID)
-		// Verify campaign exists (we don't need the document data, just verify it exists)
-		_, err := tx.Get(campaignRef)
-		if err != nil {
-			return fmt.Errorf("failed to get campaign: %w", err)
-		}
-
-		// Build updates for campaign
-		// Only increment raised by net amount (after platform fee deduction)
-		updates := []firestore.Update{
-			{Path: "raised", Value: firestore.Increment(netAmount)},
-			{Path: "updated_at", Value: time.Now()},
-		}
-
-		// Increment donor count if new donor
-		if isNewDonor && !req.IsAnonymous {
-			updates = append(updates, firestore.Update{
-				Path:  "donors",
-				Value: firestore.Increment(1),
-			})
-		}
-
-		return tx.Update(campaignRef, updates)
-	})
-
+	tx, err := donationDB.BeginTx(r.Context(), nil)
 	if err != nil {
+		utils.WriteInternalError(w, err)
+		return
+	}
+	defer tx.Rollback()
+
+	insert := `
+INSERT INTO donations (
+    id, campaign_id, donor_id, donor_name, donor_email, amount, platform_fee, processing_fee,
+    net_amount, fee, tip, total_paid, is_anonymous, message, payment_method, transaction_id,
+    status, created_at
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8,
+    $9, $10, $11, $12, $13, $14, $15, NULLIF($16, ''),
+    $17, $18
+)`
+	if _, err := tx.ExecContext(r.Context(), insert,
+		donation.ID,
+		donation.CampaignID,
+		donation.DonorID,
+		donation.DonorName,
+		donation.DonorEmail,
+		donation.Amount,
+		donation.PlatformFee,
+		donation.ProcessingFee,
+		donation.NetAmount,
+		donation.Fee,
+		donation.Tip,
+		donation.TotalPaid,
+		donation.IsAnonymous,
+		donation.Message,
+		donation.PaymentMethod,
+		donation.TransactionID,
+		donation.Status,
+		donation.CreatedAt,
+	); err != nil {
+		log.Printf("Error creating donation: %v", err)
+		utils.WriteInternalError(w, err)
+		return
+	}
+
+	updateQuery := "UPDATE campaigns SET raised = raised + $2, updated_at = $3"
+	args := []any{req.CampaignID, netAmount, time.Now()}
+	if isNewDonor && !req.IsAnonymous {
+		updateQuery += ", donors = donors + 1"
+	}
+	updateQuery += " WHERE id = $1"
+	if _, err := tx.ExecContext(r.Context(), updateQuery, args...); err != nil {
+		log.Printf("Error updating campaign donation totals: %v", err)
+		utils.WriteInternalError(w, err)
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
 		log.Printf("Transaction failed: %v", err)
 		utils.WriteInternalError(w, err)
 		return
 	}
 
-	// Log financial operation for audit
 	requestID := r.Header.Get("X-Request-ID")
 	if requestID == "" {
 		requestID = "unknown"
 	}
-	utils.LogFinancialOperation("DONATION_CREATED", donorID, req.CampaignID, requestID, req.Amount, "USD")
+	if err := jobs.EnqueueFinancialAudit(r.Context(), jobs.FinancialAuditPayload{
+		Operation: "DONATION_CREATED",
+		UserID:    donorID,
+		EntityID:  req.CampaignID,
+		RequestID: requestID,
+		Amount:    req.Amount,
+		Currency:  "USD",
+		Metadata: map[string]interface{}{
+			"donation_id":    donation.ID,
+			"payment_method": donation.PaymentMethod,
+		},
+	}); err != nil {
+		log.Printf("Error queueing donation audit job: %v", err)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -267,79 +260,81 @@ func CreateDonation(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetDonations retrieves donations with optional filters
 func GetDonations(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
-
-	if firestoreClient == nil {
-		utils.WriteInternalError(w, fmt.Errorf("firestore client not initialized"))
-		return
+	if donationDB == nil {
+		var err error
+		donationDB, err = database.GetDB()
+		if err != nil {
+			utils.WriteInternalError(w, err)
+			return
+		}
 	}
 
-	ctx := r.Context()
-	// Start with collection reference
-	collectionRef := firestoreClient.Collection("donations")
-
-	// Get query parameters
 	campaignID := r.URL.Query().Get("campaign_id")
 	donorID := r.URL.Query().Get("donor_id")
 	status := r.URL.Query().Get("status")
+	conditions := make([]string, 0)
+	args := make([]any, 0)
+	argPos := 1
 
-	// Build query by chaining Where clauses (returns Query, not CollectionRef)
-	var query firestore.Query = collectionRef.Query
 	if campaignID != "" {
 		if !utils.ValidateFirestoreID(campaignID) {
 			utils.WriteBadRequest(w, "Invalid campaign ID format")
 			return
 		}
-		query = query.Where("campaign_id", "==", campaignID)
+		conditions = append(conditions, fmt.Sprintf("campaign_id = $%d", argPos))
+		args = append(args, campaignID)
+		argPos++
 	}
 	if donorID != "" {
 		if !utils.ValidateFirestoreID(donorID) {
 			utils.WriteBadRequest(w, "Invalid donor ID format")
 			return
 		}
-		query = query.Where("donor_id", "==", donorID)
+		conditions = append(conditions, fmt.Sprintf("donor_id = $%d", argPos))
+		args = append(args, donorID)
+		argPos++
 	}
 	if status != "" {
 		if !utils.ValidateDonationStatus(status) {
 			utils.WriteBadRequest(w, "Invalid donation status")
 			return
 		}
-		query = query.Where("status", "==", status)
+		conditions = append(conditions, fmt.Sprintf("status = $%d", argPos))
+		args = append(args, status)
+		argPos++
 	}
 
-	// Order by creation date (newest first)
-	query = query.OrderBy("created_at", firestore.Desc).Limit(100)
+	query := donationSelect
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", argPos)
+	args = append(args, 100)
 
-	iter := query.Documents(ctx)
-	var donations []models.Donation
+	rows, err := donationDB.QueryContext(r.Context(), query, args...)
+	if err != nil {
+		log.Printf("Error fetching donations: %v", err)
+		utils.WriteInternalError(w, err)
+		return
+	}
+	defer rows.Close()
 
-	for {
-		doc, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
+	donations := make([]models.Donation, 0)
+	for rows.Next() {
+		donation, err := database.ScanDonation(rows.Scan)
 		if err != nil {
-			log.Printf("Error iterating donations: %v", err)
-			break
-		}
-
-		var donation models.Donation
-		if err := doc.DataTo(&donation); err != nil {
 			log.Printf("Error parsing donation: %v", err)
 			continue
 		}
-
-		// Hide donor info if anonymous
 		if donation.IsAnonymous {
 			donation.DonorName = "Anonymous"
 			donation.DonorEmail = ""
 		}
-
 		donations = append(donations, donation)
 	}
 
@@ -351,66 +346,43 @@ func GetDonations(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GetDonation retrieves a single donation by ID
 func GetDonation(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
-
-	if firestoreClient == nil {
-		utils.WriteInternalError(w, fmt.Errorf("firestore client not initialized"))
-		return
+	if donationDB == nil {
+		var err error
+		donationDB, err = database.GetDB()
+		if err != nil {
+			utils.WriteInternalError(w, err)
+			return
+		}
 	}
 
 	donationID := r.URL.Query().Get("id")
-	if donationID == "" {
-		utils.WriteBadRequest(w, "Donation ID is required")
-		return
-	}
-
-	if !utils.ValidateFirestoreID(donationID) {
+	if donationID == "" || !utils.ValidateFirestoreID(donationID) {
 		utils.WriteBadRequest(w, "Invalid donation ID format")
 		return
 	}
 
-	doc, err := firestoreClient.Collection("donations").Doc(donationID).Get(r.Context())
+	donation, err := database.ScanDonation(func(dest ...any) error {
+		return donationDB.QueryRowContext(r.Context(), donationSelect+" WHERE id = $1", donationID).Scan(dest...)
+	})
+	if err == sql.ErrNoRows {
+		utils.WriteNotFound(w, "Donation not found")
+		return
+	}
 	if err != nil {
-		if strings.Contains(err.Error(), "NotFound") {
-			utils.WriteNotFound(w, "Donation not found")
-			return
-		}
 		log.Printf("Error fetching donation: %v", err)
 		utils.WriteInternalError(w, err)
 		return
 	}
 
-	var donation models.Donation
-	if err := doc.DataTo(&donation); err != nil {
-		log.Printf("Error parsing donation: %v", err)
-		utils.WriteInternalError(w, err)
-		return
-	}
-
-	// Check if requester is the donor or campaign owner
 	requesterUID, _ := GetDonorUID(r)
-
-	// If anonymous and no requester, allow access (public donation)
-	if donation.IsAnonymous && requesterUID == "" {
-		// Allow access to anonymous donations
-	} else if donation.DonorID != requesterUID {
-		// Check if requester is campaign owner
-		campaignDoc, err := firestoreClient.Collection("campaigns").Doc(donation.CampaignID).Get(r.Context())
-		if err != nil {
-			utils.WriteForbidden(w, "Access denied")
-			return
-		}
-		var campaign models.Campaign
-		if err := campaignDoc.DataTo(&campaign); err != nil {
-			utils.WriteForbidden(w, "Access denied")
-			return
-		}
-		if campaign.OwnerID != requesterUID {
+	if !(donation.IsAnonymous && requesterUID == "") && donation.DonorID != requesterUID {
+		var ownerID string
+		if err := donationDB.QueryRowContext(r.Context(), "SELECT owner_id FROM campaigns WHERE id = $1", donation.CampaignID).Scan(&ownerID); err != nil || ownerID != requesterUID {
 			utils.WriteForbidden(w, "Access denied")
 			return
 		}

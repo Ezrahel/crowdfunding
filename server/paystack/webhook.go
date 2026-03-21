@@ -1,9 +1,9 @@
 package paystack
 
 import (
-	"context"
 	"crypto/hmac"
 	"crypto/sha512"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,31 +15,27 @@ import (
 	"server/utils"
 	"time"
 
-	"cloud.google.com/go/firestore"
+	"server/database"
 )
 
-var webhookFirestoreClient *firestore.Client
+var webhookDB *sql.DB
 
-// InitWebhook initializes webhook handler with Firestore client
-func InitWebhook(client *firestore.Client) {
-	webhookFirestoreClient = client
+func InitWebhook(db *sql.DB) {
+	webhookDB = db
 }
 
-// WebhookHandler handles Paystack webhook events
 func WebhookHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		utils.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
 		return
 	}
 
-	// Verify webhook signature
 	signature := r.Header.Get("x-paystack-signature")
 	if signature == "" {
 		utils.WriteUnauthorized(w, "Missing webhook signature")
 		return
 	}
 
-	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("Error reading webhook body: %v", err)
@@ -47,7 +43,6 @@ func WebhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify signature
 	secretKey := os.Getenv("PAYSTACK_SECRET_KEY")
 	if !verifySignature(body, signature, secretKey) {
 		log.Printf("Invalid webhook signature")
@@ -55,7 +50,6 @@ func WebhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse webhook event
 	var event WebhookEvent
 	if err := json.Unmarshal(body, &event); err != nil {
 		log.Printf("Error parsing webhook event: %v", err)
@@ -63,7 +57,6 @@ func WebhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Process event
 	if err := processWebhookEvent(&event); err != nil {
 		log.Printf("Error processing webhook event: %v", err)
 		utils.WriteInternalError(w, err)
@@ -72,18 +65,14 @@ func WebhookHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"status": "success",
-	})
+	json.NewEncoder(w).Encode(map[string]string{"status": "success"})
 }
 
-// WebhookEvent represents a Paystack webhook event
 type WebhookEvent struct {
 	Event string          `json:"event"`
 	Data  json.RawMessage `json:"data"`
 }
 
-// VirtualAccountEvent represents virtual account related events
 type VirtualAccountEvent struct {
 	Customer struct {
 		CustomerCode string `json:"customer_code"`
@@ -97,110 +86,76 @@ type VirtualAccountEvent struct {
 	Active bool `json:"active"`
 }
 
-// processWebhookEvent processes different webhook event types
 func processWebhookEvent(event *WebhookEvent) error {
 	switch event.Event {
-	case "dedicatedaccount.assign":
-		return handleDedicatedAccountAssign(event.Data)
-	case "dedicatedaccount.success":
-		return handleDedicatedAccountSuccess(event.Data)
-	case "dedicatedaccount.update":
-		return handleDedicatedAccountUpdate(event.Data)
+	case "dedicatedaccount.assign", "dedicatedaccount.success", "dedicatedaccount.update":
+		var accountEvent VirtualAccountEvent
+		if err := json.Unmarshal(event.Data, &accountEvent); err != nil {
+			return fmt.Errorf("failed to parse dedicated account event: %w", err)
+		}
+		return updateOnboardingWithVirtualAccount(accountEvent.Customer.CustomerCode, accountEvent)
 	case "charge.success":
-		// Handle successful payment to virtual account
-		return handleChargeSuccess(event.Data)
+		log.Printf("Charge success event received")
+		return nil
 	default:
 		log.Printf("Unhandled webhook event: %s", event.Event)
 		return nil
 	}
 }
 
-// handleDedicatedAccountAssign handles when a virtual account is assigned
-func handleDedicatedAccountAssign(data json.RawMessage) error {
-	var accountEvent VirtualAccountEvent
-	if err := json.Unmarshal(data, &accountEvent); err != nil {
-		return fmt.Errorf("failed to parse account assign event: %w", err)
-	}
-
-	// Update onboarding record with virtual account details
-	return updateOnboardingWithVirtualAccount(accountEvent.Customer.CustomerCode, accountEvent)
-}
-
-// handleDedicatedAccountSuccess handles successful virtual account creation
-func handleDedicatedAccountSuccess(data json.RawMessage) error {
-	var accountEvent VirtualAccountEvent
-	if err := json.Unmarshal(data, &accountEvent); err != nil {
-		return fmt.Errorf("failed to parse account success event: %w", err)
-	}
-
-	// Update onboarding record
-	return updateOnboardingWithVirtualAccount(accountEvent.Customer.CustomerCode, accountEvent)
-}
-
-// handleDedicatedAccountUpdate handles virtual account updates
-func handleDedicatedAccountUpdate(data json.RawMessage) error {
-	var accountEvent VirtualAccountEvent
-	if err := json.Unmarshal(data, &accountEvent); err != nil {
-		return fmt.Errorf("failed to parse account update event: %w", err)
-	}
-
-	// Update onboarding record
-	return updateOnboardingWithVirtualAccount(accountEvent.Customer.CustomerCode, accountEvent)
-}
-
-// handleChargeSuccess handles successful payment to virtual account
-func handleChargeSuccess(data json.RawMessage) error {
-	// This can be used to automatically credit user accounts when payments are received
-	// For now, just log it
-	log.Printf("Charge success event received")
-	return nil
-}
-
-// updateOnboardingWithVirtualAccount updates onboarding record with virtual account details
 func updateOnboardingWithVirtualAccount(customerCode string, accountEvent VirtualAccountEvent) error {
-	if webhookFirestoreClient == nil {
-		return fmt.Errorf("firestore client not initialized")
+	if webhookDB == nil {
+		var err error
+		webhookDB, err = database.GetDB()
+		if err != nil {
+			return err
+		}
 	}
 
-	// Find onboarding by Paystack customer code
-	query := webhookFirestoreClient.Collection("onboarding").
-		Where("paystack_customer_code", "==", customerCode).
-		Limit(1)
-
-	ctx := context.Background()
-	docs, err := query.Documents(ctx).GetAll()
+	onboarding, err := database.ScanOnboarding(func(dest ...any) error {
+		return webhookDB.QueryRow(`
+SELECT id, user_id, status, national_id_number, bvn, tin, virtual_account_id,
+       virtual_account_number, virtual_account_name, virtual_account_bank,
+       paystack_customer_code, created_at, updated_at, completed_at
+FROM onboarding
+WHERE paystack_customer_code = $1
+LIMIT 1`, customerCode).Scan(dest...)
+	})
+	if err == sql.ErrNoRows {
+		log.Printf("No onboarding found for customer code: %s", customerCode)
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("failed to query onboarding: %w", err)
 	}
 
-	if len(docs) == 0 {
-		log.Printf("No onboarding found for customer code: %s", customerCode)
-		return nil
-	}
-
-	doc := docs[0]
-	var onboarding models.Onboarding
-	if err := doc.DataTo(&onboarding); err != nil {
-		return fmt.Errorf("failed to parse onboarding: %w", err)
-	}
-
-	// Update virtual account details
-	updates := map[string]interface{}{
-		"virtual_account_number": accountEvent.AccountNumber,
-		"virtual_account_name":   accountEvent.AccountName,
-		"virtual_account_bank":   accountEvent.Bank.Name,
-		"updated_at":             time.Now(),
-	}
-
+	status := onboarding.Status
+	completedAt := onboarding.CompletedAt
 	if accountEvent.Active {
-		updates["status"] = models.OnboardingStatusCompleted
-		if onboarding.CompletedAt == nil {
+		status = models.OnboardingStatusCompleted
+		if completedAt == nil {
 			now := time.Now()
-			updates["completed_at"] = now
+			completedAt = &now
 		}
 	}
 
-	_, err = doc.Ref.Set(ctx, updates, firestore.MergeAll)
+	_, err = webhookDB.Exec(`
+UPDATE onboarding
+SET virtual_account_number = $2,
+    virtual_account_name = $3,
+    virtual_account_bank = $4,
+    status = $5,
+    completed_at = $6,
+    updated_at = $7
+WHERE id = $1`,
+		onboarding.ID,
+		accountEvent.AccountNumber,
+		accountEvent.AccountName,
+		accountEvent.Bank.Name,
+		status,
+		completedAt,
+		time.Now(),
+	)
 	if err != nil {
 		return fmt.Errorf("failed to update onboarding: %w", err)
 	}
@@ -209,17 +164,12 @@ func updateOnboardingWithVirtualAccount(customerCode string, accountEvent Virtua
 	return nil
 }
 
-// verifySignature verifies Paystack webhook signature using HMAC SHA512
 func verifySignature(payload []byte, signature, secret string) bool {
 	if secret == "" {
 		return false
 	}
-
-	// Paystack uses HMAC SHA512 (not simple hash concatenation)
 	mac := hmac.New(sha512.New, []byte(secret))
 	mac.Write(payload)
 	expectedSignature := hex.EncodeToString(mac.Sum(nil))
-
-	// Use constant-time comparison to prevent timing attacks
 	return hmac.Equal([]byte(signature), []byte(expectedSignature))
 }

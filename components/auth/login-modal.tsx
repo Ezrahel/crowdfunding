@@ -273,7 +273,7 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 mt-4">
+            <div className="grid grid-cols-1 gap-3 mt-4">
               <Button
                 variant="outline"
                 type="button"
@@ -300,21 +300,6 @@ export default function LoginModal({ isOpen, onClose, onSwitchToSignup }: LoginM
                   />
                 </svg>
                 Google
-              </Button>
-              <Button
-                variant="outline"
-                type="button"
-                disabled={isSubmitting}
-                className="h-10"
-                onClick={() => handleSocialLogin("facebook")}
-              >
-                <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24">
-                  <path
-                    d="M22 12c0-5.52-4.48-10-10-10S2 6.48 2 12c0 4.95 3.65 9.07 8.44 9.84v-7H7.07v-2.84h3.37V9.35c0-3.33 2.03-5.17 5.05-5.17 1.46 0 2.73.11 3.11.16v3.44h-2.15c-1.64 0-1.96.78-1.96 1.92v2.52h3.51l-.56 2.84h-2.95v7C18.35 21.07 22 16.95 22 12z"
-                    fill="currentColor"
-                  />
-                </svg>
-                Facebook
               </Button>
             </div>
 
