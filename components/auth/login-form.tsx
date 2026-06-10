@@ -152,6 +152,7 @@ export default function LoginForm() {
                   value={formData.email}
                   onChange={(e) => handleInputChange("email", e.target.value)}
                   disabled={isLoading}
+                  maxLength={320}
                 />
               </div>
               {errors.email && <p className="text-sm text-red-500 mt-1">{errors.email}</p>}
@@ -174,6 +175,7 @@ export default function LoginForm() {
                   value={formData.password}
                   onChange={(e) => handleInputChange("password", e.target.value)}
                   disabled={isLoading}
+                  maxLength={128}
                 />
                 <button
                   type="button"

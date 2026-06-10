@@ -166,6 +166,7 @@ export default function ForgotPasswordForm() {
                   className={`pl-10 ${errors.email ? "border-red-500 focus:border-red-500 focus:ring-red-500" : ""}`}
                   value={formData.email}
                   onChange={(e) => handleInputChange(e.target.value)}
+                  maxLength={320}
                 />
               </div>
               {errors.email && <p className="text-sm text-red-500">{errors.email}</p>}

@@ -6,6 +6,7 @@ export const metadata: Metadata = {
   description: "Your fundraising campaign is now live",
 }
 
-export default function CampaignCreatedPageRoute({ params }: { params: { id: string } }) {
-  return <CampaignCreatedPage campaignId={params.id} />
+export default async function CampaignCreatedPageRoute({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  return <CampaignCreatedPage campaignId={id} />
 }

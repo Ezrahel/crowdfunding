@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,7 +8,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Mail, Phone, MapPin, Clock, CheckCircle } from "lucide-react"
+import { Mail, Phone, MapPin, Clock, CheckCircle, Loader2, AlertCircle } from "lucide-react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 
 export default function ContactPage() {
   const [formState, setFormState] = useState({
@@ -19,13 +19,37 @@ export default function ContactPage() {
     message: "",
     submitted: false,
   })
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    // In a real app, you would send the form data to your backend
-    console.log("Form submitted:", formState)
-    // Simulate form submission
-    setFormState({ ...formState, submitted: true })
+    setIsSubmitting(true)
+    setSubmitError(null)
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8090'
+      const response = await fetch(`${apiUrl}/api/contact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: formState.name,
+          email: formState.email,
+          subject: formState.subject,
+          message: formState.message,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to send message')
+      }
+
+      setFormState({ ...formState, submitted: true })
+    } catch (error: any) {
+      setSubmitError(error.message || 'Something went wrong. Please try again.')
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
@@ -60,6 +84,12 @@ export default function ContactPage() {
               <CardContent>
                 {!formState.submitted ? (
                   <form onSubmit={handleSubmit} className="space-y-6">
+                    {submitError && (
+                      <Alert variant="destructive">
+                        <AlertCircle className="h-4 w-4" />
+                        <AlertDescription>{submitError}</AlertDescription>
+                      </Alert>
+                    )}
                     <div className="space-y-2">
                       <Label htmlFor="name">Your Name</Label>
                       <Input
@@ -69,6 +99,7 @@ export default function ContactPage() {
                         value={formState.name}
                         onChange={handleChange}
                         required
+                        maxLength={200}
                       />
                     </div>
 
@@ -82,6 +113,7 @@ export default function ContactPage() {
                         value={formState.email}
                         onChange={handleChange}
                         required
+                        maxLength={320}
                       />
                     </div>
 
@@ -112,11 +144,16 @@ export default function ContactPage() {
                         value={formState.message}
                         onChange={handleChange}
                         required
+                        maxLength={5000}
                       />
                     </div>
 
-                    <Button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700">
-                      Send Message
+                    <Button type="submit" disabled={isSubmitting} className="w-full bg-emerald-600 hover:bg-emerald-700">
+                      {isSubmitting ? (
+                        <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sending...</>
+                      ) : (
+                        'Send Message'
+                      )}
                     </Button>
                   </form>
                 ) : (

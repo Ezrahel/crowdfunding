@@ -1,5 +1,6 @@
 import { DonationPaymentPage } from "@/components/donation-payment-page"
 
-export default function DonatePage({ params }: { params: { id: string } }) {
-  return <DonationPaymentPage campaignId={params.id} />
+export default async function DonatePage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  return <DonationPaymentPage campaignId={id} />
 }

@@ -1,35 +1,58 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useAuth } from "@/contexts/auth-context"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Loader2, XCircle, Mail, CheckCircle2 } from "lucide-react"
 import AuthLayout from "./auth-layout"
+import { applyActionCode } from "firebase/auth"
+import { auth } from "@/lib/firebase"
 
 export default function EmailVerification() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const oobCode = searchParams.get('oobCode')
   const { user, sendVerificationEmail } = useAuth()
-  const [verificationCode, setVerificationCode] = useState("")
   const [isLoading, setIsLoading] = useState(false)
+  const [isVerifying, setIsVerifying] = useState(false)
   const [error, setError] = useState("")
   const [success, setSuccess] = useState(false)
   const [resendCooldown, setResendCooldown] = useState(0)
 
   useEffect(() => {
-    if (!user) {
+    if (!user && !oobCode) {
       router.push("/auth/signup")
       return
     }
 
-    // If email is already verified, redirect to onboarding
-    if (user.emailVerified) {
+    if (user && user.emailVerified) {
       router.push("/onboarding")
     }
-  }, [user, router])
+  }, [user, router, oobCode])
+
+  useEffect(() => {
+    if (oobCode) {
+      setIsVerifying(true)
+      applyActionCode(auth, oobCode)
+        .then(() => {
+          setSuccess(true)
+          setTimeout(() => router.push("/onboarding"), 2000)
+        })
+        .catch((err: any) => {
+          if (err.code === "auth/expired-action-code") {
+            setError("This verification link has expired. Request a new one below.")
+          } else if (err.code === "auth/invalid-action-code") {
+            setError("Invalid verification link. Request a new one below.")
+          } else {
+            setError("Failed to verify email. Please try again.")
+          }
+        })
+        .finally(() => setIsVerifying(false))
+    }
+  }, [oobCode, router])
 
   useEffect(() => {
     if (resendCooldown > 0) {
@@ -51,6 +74,37 @@ export default function EmailVerification() {
       console.error('Error resending code:', err)
       setError("Failed to resend verification email. Please try again.")
     }
+  }
+
+  if (isVerifying) {
+    return (
+      <AuthLayout>
+        <Card className="w-full max-w-md shadow-xl border-0 bg-white/95 backdrop-blur-sm">
+          <CardHeader className="text-center">
+            <div className="mx-auto w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mb-4">
+              <Loader2 className="h-8 w-8 text-emerald-600 animate-spin" />
+            </div>
+            <CardTitle className="text-2xl font-bold">Verifying your email...</CardTitle>
+          </CardHeader>
+        </Card>
+      </AuthLayout>
+    )
+  }
+
+  if (success && !user) {
+    return (
+      <AuthLayout>
+        <Card className="w-full max-w-md shadow-xl border-0 bg-white/95 backdrop-blur-sm">
+          <CardHeader className="text-center">
+            <div className="mx-auto w-16 h-16 bg-emerald-100 rounded-full flex items-center justify-center mb-4">
+              <CheckCircle2 className="h-8 w-8 text-emerald-600" />
+            </div>
+            <CardTitle className="text-2xl font-bold">Email Verified!</CardTitle>
+            <CardDescription>Redirecting you...</CardDescription>
+          </CardHeader>
+        </Card>
+      </AuthLayout>
+    )
   }
 
   if (!user) {
@@ -77,9 +131,9 @@ export default function EmailVerification() {
         <CardContent className="space-y-6">
           {error && (
             <Alert variant="destructive" className="border-red-200 bg-red-50">
-            <XCircle className="h-4 w-4" />
+              <XCircle className="h-4 w-4" />
               <AlertDescription>{error}</AlertDescription>
-          </Alert>
+            </Alert>
           )}
 
           {success && (
@@ -98,7 +152,7 @@ export default function EmailVerification() {
             <p className="text-sm text-gray-600">
               After verification, you'll be able to access all features of FundRaise.
             </p>
-            </div>
+          </div>
 
           <div className="pt-4 border-t">
             <Button
@@ -108,16 +162,16 @@ export default function EmailVerification() {
               className="w-full h-11"
             >
               {resendCooldown > 0 ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Resend in {resendCooldown}s
-              </>
-            ) : (
+                </>
+              ) : (
                 <>
                   <Mail className="mr-2 h-4 w-4" />
                   Resend verification email
                 </>
-            )}
+              )}
             </Button>
           </div>
         </CardContent>

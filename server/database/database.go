@@ -223,6 +223,20 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_events_created_at ON audit_events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events(event_type);
 
+CREATE TABLE IF NOT EXISTS paystack_webhook_events (
+    event_key TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    paystack_reference TEXT NOT NULL DEFAULT '',
+    signature TEXT NOT NULL DEFAULT '',
+    payload JSONB NOT NULL DEFAULT '{}'::JSONB,
+    processing_status TEXT NOT NULL DEFAULT 'received',
+    last_error TEXT NOT NULL DEFAULT '',
+    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    processed_at TIMESTAMPTZ NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paystack_webhooks_reference ON paystack_webhook_events(paystack_reference);
+CREATE INDEX IF NOT EXISTS idx_paystack_webhooks_status_received_at ON paystack_webhook_events(processing_status, received_at DESC);
+
 CREATE TABLE IF NOT EXISTS campaign_updates (
     id TEXT PRIMARY KEY,
     campaign_id TEXT NOT NULL,

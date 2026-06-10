@@ -6,6 +6,7 @@ export const metadata: Metadata = {
   description: "Your donation has been processed successfully",
 }
 
-export default function DonationSuccessPageRoute({ params }: { params: { id: string } }) {
-  return <DonationSuccessPage donationId={params.id} />
+export default async function DonationSuccessPageRoute({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  return <DonationSuccessPage donationId={id} />
 }

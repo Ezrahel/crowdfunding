@@ -6,6 +6,7 @@ export const metadata: Metadata = {
   description: "Your donation receipt and confirmation",
 }
 
-export default function DonationReceiptPageRoute({ params }: { params: { id: string } }) {
-  return <DonationReceiptPage receiptId={params.id} />
+export default async function DonationReceiptPageRoute({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params
+  return <DonationReceiptPage receiptId={id} />
 }

@@ -9,18 +9,21 @@ import { Textarea } from "@/components/ui/textarea"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Heart, CreditCard, Lock, AlertCircle } from "lucide-react"
+import { Heart, CreditCard, Lock, AlertCircle, Loader2 } from "lucide-react"
 import { validateEmail } from "@/lib/api-client"
+
+interface DonationTier {
+  amount: number
+  description: string
+}
 
 interface DonationModalProps {
   isOpen: boolean
   onClose: () => void
   campaign: {
+    id: string
     title: string
-    donationTiers: Array<{
-      amount: number
-      description: string
-    }>
+    donationTiers?: DonationTier[]
   }
 }
 
@@ -32,6 +35,8 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
   const [message, setMessage] = useState("")
   const [isAnonymous, setIsAnonymous] = useState(false)
   const [coverFees, setCoverFees] = useState(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [errors, setErrors] = useState<{
     amount?: string
     donorName?: string
@@ -54,7 +59,7 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
 
   const calculateFees = () => {
     const donationAmount = Number.parseFloat(amount) || 0
-    if (donationAmount <= 0) return { platformFee: 0, processingFee: 0, total: 0 }
+    if (donationAmount <= 0) return { platformFee: 0, processingFee: 0, total: 0, netToCampaign: 0 }
     
     // 5% platform fee (always deducted from donation)
     const platformFee = donationAmount * 0.05
@@ -109,19 +114,44 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
     return Object.keys(newErrors).length === 0
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!validateForm()) {
       return
     }
-    // TODO: Implement actual donation submission
-    console.log("Donation submitted:", {
-      amount,
-      donorName: isAnonymous ? "Anonymous" : donorName,
-      donorEmail: isAnonymous ? "" : donorEmail,
-      message,
-      coverFees,
-    })
-    onClose()
+
+    setIsSubmitting(true)
+    setSubmitError(null)
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8090'
+      const donationAmount = Number.parseFloat(amount) || 0
+      const response = await fetch(`${apiUrl}/api/donation/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          campaign_id: campaign.id,
+          donor_name: isAnonymous ? '' : donorName,
+          donor_email: isAnonymous ? '' : donorEmail,
+          amount: donationAmount,
+          is_anonymous: isAnonymous,
+          message: message,
+          payment_method: 'card',
+          cover_fees: coverFees,
+        }),
+      })
+
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.message || 'Donation failed')
+      }
+
+      const data = await response.json()
+      window.location.href = `/donation-success/${data.id || data.donation_id || campaign.id}`
+    } catch (error: any) {
+      setSubmitError(error.message || 'Something went wrong. Please try again.')
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   return (
@@ -133,6 +163,12 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
 
         <div className="space-y-6">
           {/* Error Messages */}
+          {submitError && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{submitError}</AlertDescription>
+            </Alert>
+          )}
           {(errors.amount || errors.donorName || errors.donorEmail) && (
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
@@ -147,17 +183,19 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
             <Label className="text-lg font-semibold mb-4 block">Choose your donation amount</Label>
 
             {/* Preset Amounts */}
-            <RadioGroup value={selectedTier} onValueChange={handleTierSelect} className="space-y-3 mb-4">
-              {campaign.donationTiers.map((tier, index) => (
-                <div key={index} className="flex items-center space-x-3 p-3 border rounded-lg hover:bg-gray-50">
-                  <RadioGroupItem value={tier.amount.toString()} id={`tier-${index}`} />
-                  <Label htmlFor={`tier-${index}`} className="flex-1 cursor-pointer">
-                    <div className="font-semibold text-emerald-600">{formatCurrency(tier.amount)}</div>
-                    <div className="text-sm text-gray-600">{tier.description}</div>
-                  </Label>
-                </div>
-              ))}
-            </RadioGroup>
+            {campaign.donationTiers && campaign.donationTiers.length > 0 && (
+              <RadioGroup value={selectedTier} onValueChange={handleTierSelect} className="space-y-3 mb-4">
+                {campaign.donationTiers.map((tier, index) => (
+                  <div key={index} className="flex items-center space-x-3 p-3 border rounded-lg hover:bg-gray-50">
+                    <RadioGroupItem value={tier.amount.toString()} id={`tier-${index}`} />
+                    <Label htmlFor={`tier-${index}`} className="flex-1 cursor-pointer">
+                      <div className="font-semibold text-emerald-600">{formatCurrency(tier.amount)}</div>
+                      <div className="text-sm text-gray-600">{tier.description}</div>
+                    </Label>
+                  </div>
+                ))}
+              </RadioGroup>
+            )}
 
             {/* Custom Amount */}
             <div>
@@ -231,7 +269,7 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
             </div>
 
             <div className="flex items-center space-x-2">
-              <Checkbox id="anonymous" checked={isAnonymous} onCheckedChange={setIsAnonymous} />
+              <Checkbox id="anonymous" checked={isAnonymous} onCheckedChange={(checked) => setIsAnonymous(checked === true)} />
               <Label htmlFor="anonymous" className="text-sm">
                 Make this donation anonymous
               </Label>
@@ -241,7 +279,7 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
           {/* Fee Coverage */}
           <div className="bg-gray-50 p-4 rounded-lg">
             <div className="flex items-center space-x-2 mb-2">
-              <Checkbox id="cover-fees" checked={coverFees} onCheckedChange={setCoverFees} />
+              <Checkbox id="cover-fees" checked={coverFees} onCheckedChange={(checked) => setCoverFees(checked === true)} />
               <Label htmlFor="cover-fees" className="text-sm font-medium">
                 Help cover transaction fees
               </Label>
@@ -304,11 +342,15 @@ export function DonationModal({ isOpen, onClose, campaign }: DonationModalProps)
             </Button>
             <Button
               className="flex-1 bg-emerald-600 hover:bg-emerald-700"
-              disabled={!amount || Number.parseFloat(amount) <= 0}
+              disabled={!amount || Number.parseFloat(amount) <= 0 || isSubmitting}
               onClick={handleSubmit}
             >
-              <Heart className="w-4 h-4 mr-2" />
-              Donate {formatCurrency(calculateTotal())}
+              {isSubmitting ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Heart className="w-4 h-4 mr-2" />
+              )}
+              {isSubmitting ? 'Processing...' : `Donate ${formatCurrency(calculateTotal())}`}
             </Button>
           </div>
         </div>
